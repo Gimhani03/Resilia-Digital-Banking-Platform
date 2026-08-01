@@ -5,6 +5,8 @@ Duothan 6.0 · Phase 2 Rebuild · Team **Cybernauts**
 
 RESILIA restores everyday banking — accounts, payments, credit, fraud controls, and staff operations — with security and auditability built in from the start. Phase 1’s service-oriented design is delivered here as a modular monorepo: independently owned NestJS domains, a customer mobile app, and a staff ops web console.
 
+**How to use the apps:** see the [User Guide](./USER_GUIDE.md).
+
 ---
 
 ## Features
