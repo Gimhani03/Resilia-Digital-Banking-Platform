@@ -51,33 +51,44 @@ export default function OnboardingScreen() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  async function pickFromLibrary(options: ImagePicker.ImagePickerOptions) {
+    const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!lib.granted) {
+      setError("Photo library permission is required");
+      return null;
+    }
+    return ImagePicker.launchImageLibraryAsync(options);
+  }
+
+  /** Simulators and some devices have no camera — fall back to the library. */
+  async function capture(
+    useCamera: boolean,
+    options: ImagePicker.ImagePickerOptions,
+    fallbackNote: string,
+  ) {
+    if (!useCamera) return pickFromLibrary(options);
+
+    const cam = await ImagePicker.requestCameraPermissionsAsync();
+    if (!cam.granted) {
+      setError("Camera permission denied — choosing from your library instead");
+      return pickFromLibrary(options);
+    }
+    try {
+      return await ImagePicker.launchCameraAsync(options);
+    } catch {
+      setError(fallbackNote);
+      return pickFromLibrary(options);
+    }
+  }
+
   async function captureId(useCamera: boolean) {
     setError("");
-    if (useCamera) {
-      const cam = await ImagePicker.requestCameraPermissionsAsync();
-      if (!cam.granted) {
-        setError("Camera permission is required to photograph your ID");
-        return;
-      }
-    } else {
-      const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!lib.granted) {
-        setError("Photo library permission is required");
-        return;
-      }
-    }
-    const result = useCamera
-      ? await ImagePicker.launchCameraAsync({
-          mediaTypes: ["images"],
-          quality: 0.7,
-          base64: true,
-        })
-      : await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ["images"],
-          quality: 0.7,
-          base64: true,
-        });
-    if (result.canceled || !result.assets?.[0]) return;
+    const result = await capture(
+      useCamera,
+      { mediaTypes: ["images"], quality: 0.7, base64: true },
+      "No camera on this device — pick an ID photo from your library",
+    );
+    if (!result || result.canceled || !result.assets?.[0]) return;
     const asset = result.assets[0];
     if (!asset.base64) {
       setError("Could not read image data — try again");
@@ -89,20 +100,19 @@ export default function OnboardingScreen() {
     setDocSelected(true);
   }
 
-  async function captureSelfie() {
+  async function captureSelfie(useCamera = true) {
     setError("");
-    const cam = await ImagePicker.requestCameraPermissionsAsync();
-    if (!cam.granted) {
-      setError("Camera permission is required for the liveness selfie");
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      quality: 0.7,
-      base64: true,
-      cameraType: ImagePicker.CameraType.front,
-    });
-    if (result.canceled || !result.assets?.[0]) return;
+    const result = await capture(
+      useCamera,
+      {
+        mediaTypes: ["images"],
+        quality: 0.7,
+        base64: true,
+        cameraType: ImagePicker.CameraType.front,
+      },
+      "No camera on this device — pick a selfie from your library",
+    );
+    if (!result || result.canceled || !result.assets?.[0]) return;
     const asset = result.assets[0];
     if (!asset.base64) {
       setError("Could not read selfie data — try again");
@@ -268,7 +278,7 @@ export default function OnboardingScreen() {
                     : "Look straight at the camera · good lighting"}
                 </Text>
                 <Pressable
-                  onPress={captureSelfie}
+                  onPress={() => captureSelfie(true)}
                   accessibilityRole="button"
                   accessibilityLabel="Take liveness selfie"
                   style={styles.selfie}
@@ -283,6 +293,11 @@ export default function OnboardingScreen() {
                   </Text>
                 </Pressable>
               </Card>
+              <Button
+                title="Choose photo instead"
+                variant="ghost"
+                onPress={() => captureSelfie(false)}
+              />
               <ErrorBanner message={error} />
               <Button
                 title="Continue"
