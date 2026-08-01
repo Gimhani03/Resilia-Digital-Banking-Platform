@@ -271,4 +271,3 @@ Customer accounts should use the mobile app (or customer web paths), not the sta
 - Project setup, stack, and FR summary: [`README.md`](./README.md)  
 - API health: `GET /api/health`  
 
-For questions during judging, use the demo accounts above and the walkthrough in section 4.
