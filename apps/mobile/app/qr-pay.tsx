@@ -30,6 +30,11 @@ import {
   useStepUpCode,
 } from "../src/lib/stepup";
 import { useAuth } from "../src/lib/auth";
+import {
+  calculateQrTip,
+  parseEmvQr,
+  type EmvQrData,
+} from "../src/lib/emvqr";
 import { colors, fonts } from "../src/theme";
 
 const DEMO_QR = [
@@ -47,6 +52,8 @@ export default function QrPayScreen() {
   const [payload, setPayload] = useState("");
   const [merchant, setMerchant] = useState("");
   const [amount, setAmount] = useState("");
+  const [tip, setTip] = useState("");
+  const [qrInfo, setQrInfo] = useState<EmvQrData | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [accountId, setAccountId] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -68,14 +75,33 @@ export default function QrPayScreen() {
   );
 
   const account = accounts.find((a) => a.id === accountId);
-  const amt = Number(amount) || 0;
+  const baseAmount = Number(amount) || 0;
+  const tipAmount = calculateQrTip(qrInfo, baseAmount, Number(tip) || 0);
+  const amt = baseAmount + tipAmount;
 
   function applyPayload(raw: string, label?: string) {
-    setPayload(raw);
-    setMerchant(label || `Merchant · ${raw.slice(0, 18)}`);
+    const clean = raw.trim();
+    try {
+      const parsed = parseEmvQr(clean);
+      if (parsed && !parsed.crcValid) {
+        setError("Invalid merchant QR checksum. Payment blocked for your safety.");
+        return;
+      }
+      setQrInfo(parsed);
+      setPayload(clean);
+      setMerchant(
+        parsed
+          ? [parsed.merchantName, parsed.merchantCity].filter(Boolean).join(" · ")
+          : label || `Merchant · ${clean.slice(0, 18)}`,
+      );
+      setAmount(parsed?.amount?.toFixed(2) || "");
+      setTip("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Invalid merchant QR");
+      return;
+    }
     setScanned(true);
     setCameraOn(false);
-    if (!amount) setAmount("1250");
     setError("");
   }
 
@@ -113,6 +139,10 @@ export default function QrPayScreen() {
       setError("Complete merchant and amount");
       return;
     }
+    if (qrInfo && qrInfo.currency !== "LKR") {
+      setError(`This account can only pay LKR QR codes, not ${qrInfo.currency}.`);
+      return;
+    }
     if (!mfaOpen) {
       setMfaOpen(true);
       return;
@@ -127,10 +157,14 @@ export default function QrPayScreen() {
         idempotencyKey: newIdempotencyKey(),
         body: JSON.stringify({
           accountId,
-          biller: merchant || payload,
+          biller: qrInfo?.merchantId || merchant || payload,
           amount: amt,
           method: "QR",
-          accountRef: payload,
+          accountRef:
+            qrInfo?.reference ||
+            qrInfo?.billNumber ||
+            qrInfo?.merchantId ||
+            payload,
           mfaChallengeId: challengeId,
         }),
       });
@@ -235,17 +269,76 @@ export default function QrPayScreen() {
                 }}
               >
                 <Text style={styles.merchant}>{merchant}</Text>
-                <Text style={styles.payload}>{payload}</Text>
+                {qrInfo ? (
+                  <>
+                    <Text style={styles.standard}>
+                      ✓ EMVCo / LankaQR-compatible payload
+                    </Text>
+                    <View style={styles.qrDetails}>
+                      <Text style={styles.qrDetail}>
+                        Currency: {qrInfo.currency}
+                      </Text>
+                      <Text style={styles.qrDetail}>
+                        Type: {qrInfo.initiationMethod.toUpperCase()}
+                      </Text>
+                      {qrInfo.merchantId ? (
+                        <Text style={styles.qrDetail}>
+                          Merchant ID: {qrInfo.merchantId}
+                        </Text>
+                      ) : null}
+                      {qrInfo.reference || qrInfo.billNumber ? (
+                        <Text style={styles.qrDetail}>
+                          Reference: {qrInfo.reference || qrInfo.billNumber}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </>
+                ) : (
+                  <Text style={styles.payload}>{payload}</Text>
+                )}
               </Card>
-              <Field label="Amount (LKR)">
+              <Field label={`Amount (${qrInfo?.currency || "LKR"})`}>
                 <Input
                   value={amount}
                   onChangeText={setAmount}
                   keyboardType="decimal-pad"
-                  style={{ fontFamily: fonts.display, fontSize: 24 }}
+                  editable={!qrInfo?.amount}
+                  style={{
+                    fontFamily: fonts.display,
+                    fontSize: 24,
+                    opacity: qrInfo?.amount ? 0.7 : 1,
+                  }}
                   accessibilityLabel="Amount"
                 />
               </Field>
+              {qrInfo?.amount ? (
+                <Text style={styles.lockedHint}>
+                  Amount supplied by the merchant QR and cannot be edited.
+                </Text>
+              ) : null}
+              {qrInfo?.tip.type === "prompt" ? (
+                <Field label="Tip (optional)">
+                  <Input
+                    value={tip}
+                    onChangeText={setTip}
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    accessibilityLabel="Tip"
+                  />
+                </Field>
+              ) : null}
+              {qrInfo?.tip.type === "fixed" ||
+              qrInfo?.tip.type === "percentage" ? (
+                <Text style={styles.tipLine}>
+                  Merchant convenience fee: {formatLkr(tipAmount)}
+                  {qrInfo.tip.type === "percentage"
+                    ? ` (${qrInfo.tip.value}%)`
+                    : ""}
+                </Text>
+              ) : null}
+              {tipAmount > 0 ? (
+                <Text style={styles.total}>Total: {formatLkr(amt)}</Text>
+              ) : null}
               <Text style={styles.label}>Pay from</Text>
               <Pressable
                 style={styles.picker}
@@ -273,6 +366,11 @@ export default function QrPayScreen() {
                 onPress={() => {
                   setScanned(false);
                   setMfaOpen(false);
+                  setQrInfo(null);
+                  setPayload("");
+                  setMerchant("");
+                  setAmount("");
+                  setTip("");
                 }}
               />
             </>
@@ -285,7 +383,12 @@ export default function QrPayScreen() {
             title={mfaOpen ? "Authorize payment" : "Pay with MFA"}
             onPress={pay}
             loading={loading}
-            disabled={!accountId || amt <= 0 || (mfaOpen && code.length < 4)}
+            disabled={
+              !accountId ||
+              amt <= 0 ||
+              (qrInfo !== null && qrInfo.currency !== "LKR") ||
+              (mfaOpen && code.length < 4)
+            }
           />
         </StickyFooter>
       ) : null}
@@ -380,6 +483,33 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   payload: { fontFamily: fonts.sans, fontSize: 12, color: colors.muted },
+  standard: {
+    fontFamily: fonts.sansBold,
+    fontSize: 11,
+    color: colors.crimsonDark,
+    marginTop: 4,
+  },
+  qrDetails: { gap: 3, marginTop: 10 },
+  qrDetail: { fontFamily: fonts.sans, fontSize: 12, color: colors.navy },
+  lockedHint: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    color: colors.muted,
+    marginTop: -8,
+    marginBottom: 14,
+  },
+  tipLine: {
+    fontFamily: fonts.sansBold,
+    fontSize: 12,
+    color: colors.navy,
+    marginBottom: 12,
+  },
+  total: {
+    fontFamily: fonts.display,
+    fontSize: 20,
+    color: colors.crimsonDark,
+    marginBottom: 14,
+  },
   label: {
     fontFamily: fonts.sansBold,
     fontSize: 12,
