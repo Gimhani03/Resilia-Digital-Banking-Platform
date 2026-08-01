@@ -1,5 +1,12 @@
 import { useCallback, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -36,6 +43,7 @@ export default function QrPayScreen() {
   const router = useRouter();
   const [permission, requestPermission] = useCameraPermissions();
   const [cameraOn, setCameraOn] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const [payload, setPayload] = useState("");
   const [merchant, setMerchant] = useState("");
   const [amount, setAmount] = useState("");
@@ -84,13 +92,20 @@ export default function QrPayScreen() {
   }
 
   async function enableCamera() {
-    const res = permission?.granted ? permission : await requestPermission();
+    setError("");
+    let res = permission;
+    if (!res?.granted) res = await requestPermission();
     if (!res?.granted) {
-      setError("Camera permission denied — paste a payload instead (fallback).");
+      setBlocked(!res?.canAskAgain);
+      setError(
+        res?.canAskAgain === false
+          ? "Camera access is blocked in system settings — enable it, or paste a payload below."
+          : "Camera permission denied — paste a payload instead (fallback).",
+      );
       return;
     }
+    setBlocked(false);
     setCameraOn(true);
-    setError("");
   }
 
   async function pay() {
@@ -143,16 +158,29 @@ export default function QrPayScreen() {
 
           {!scanned ? (
             <>
-              {cameraOn && permission?.granted ? (
-                <View style={styles.cameraWrap}>
-                  <CameraView
-                    style={StyleSheet.absoluteFillObject}
-                    barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                    onBarcodeScanned={({ data }) => {
-                      if (data) applyPayload(data);
-                    }}
+              {cameraOn ? (
+                <>
+                  <View style={styles.cameraWrap}>
+                    <CameraView
+                      style={StyleSheet.absoluteFillObject}
+                      facing="back"
+                      barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                      onBarcodeScanned={
+                        scanned
+                          ? undefined
+                          : ({ data }) => {
+                              if (data) applyPayload(data);
+                            }
+                      }
+                    />
+                    <View pointerEvents="none" style={styles.reticle} />
+                  </View>
+                  <Button
+                    title="Close camera"
+                    variant="ghost"
+                    onPress={() => setCameraOn(false)}
                   />
-                </View>
+                </>
               ) : (
                 <View style={styles.scanFrame}>
                   <Text style={styles.scanTitle}>Scan merchant QR</Text>
@@ -160,6 +188,13 @@ export default function QrPayScreen() {
                     Camera opens when permitted · otherwise paste below
                   </Text>
                   <Button title="Open camera" onPress={enableCamera} />
+                  {blocked ? (
+                    <Button
+                      title="Open settings"
+                      variant="ghost"
+                      onPress={() => Linking.openSettings()}
+                    />
+                  ) : null}
                 </View>
               )}
               <Field label="QR payload (fallback)">
@@ -274,10 +309,21 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   cameraWrap: {
-    height: 220,
+    height: 280,
     borderRadius: 18,
     overflow: "hidden",
-    marginBottom: 16,
+    marginBottom: 12,
+    backgroundColor: "#000",
+  },
+  reticle: {
+    position: "absolute",
+    top: 50,
+    left: 50,
+    right: 50,
+    bottom: 50,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.9)",
+    borderRadius: 16,
   },
   scanFrame: {
     minHeight: 160,
