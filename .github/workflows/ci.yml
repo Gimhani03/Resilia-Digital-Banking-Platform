@@ -1,0 +1,35 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build shared
+        run: npm run build -w @resilia/shared
+      - name: Prisma generate + validate
+        working-directory: apps/api
+        env:
+          DATABASE_URL: "file:./ci.db"
+        run: |
+          npx prisma generate
+          npx prisma validate
+      - name: Build API
+        run: npm run build -w @resilia/api
+        env:
+          DATABASE_URL: "file:./ci.db"
+          JWT_SECRET: ci-secret
+          DEMO_MODE: "false"
+      - name: Typecheck mobile
+        working-directory: apps/mobile
+        run: npx tsc --noEmit

@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Default: SQLite (works without Docker). For Postgres: set provider = "postgresql"
+// and DATABASE_URL=postgresql://resilia:resilia@localhost:5432/resilia then db push.
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String            @id @default(cuid())
+  username        String            @unique
+  passwordHash    String
+  fullName        String
+  nationalId      String
+  email           String            @default("")
+  phone           String            @default("")
+  phoneLast4      String
+  address         String            @default("")
+  role            String            @default("CUSTOMER")
+  kycStatus       String            @default("VERIFIED")
+  totpSecret      String            @default("")
+  totpEnabled     Boolean           @default(false)
+  backupCodesHash String            @default("[]")
+  createdAt       DateTime          @default(now())
+  devices         Device[]
+  accounts        Account[]
+  cards           Card[]
+  notifications   Notification[]
+  loans           LoanApplication[]
+  beneficiaries   Beneficiary[]
+  disputes        Dispute[]
+  sessions        Session[]
+  kycDocuments    KycDocument[]
+}
+
+model Session {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  tokenJti         String   @unique
+  refreshTokenHash String   @default("")
+  revoked          Boolean  @default(false)
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  createdAt        DateTime @default(now())
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  name        String
+  platform    String
+  location    String
+  fingerprint String
+  trusted     Boolean  @default(false)
+  pending     Boolean  @default(false)
+  lastSeen    DateTime @default(now())
+}
+
+model Account {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id])
+  label        String
+  mask         String
+  type         String
+  balance      Decimal
+  heldAmount   Decimal       @default(0)
+  currency     String        @default("LKR")
+  frozen       Boolean       @default(false)
+  nickname     String        @default("")
+  createdAt    DateTime      @default(now())
+  transactions Transaction[]
+  ledger       LedgerEntry[]
+}
+
+model LedgerEntry {
+  id           String   @id @default(cuid())
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id])
+  transactionId String?
+  direction    String
+  amount       Decimal
+  balanceAfter Decimal
+  memo         String   @default("")
+  createdAt    DateTime @default(now())
+}
+
+model Beneficiary {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  name          String
+  bankName      String
+  accountMask   String
+  accountNumber String
+  nickname      String   @default("")
+  favorite      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+}
+
+model Biller {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  category    String
+  accountHint String
+  minAmount   Int     @default(100)
+  maxAmount   Int     @default(500000)
+  active      Boolean @default(true)
+}
+
+model Transaction {
+  id             String    @id @default(cuid())
+  accountId      String
+  account        Account   @relation(fields: [accountId], references: [id])
+  reference      String    @unique
+  counterparty   String
+  category       String
+  amount         Decimal
+  fee            Decimal   @default(0)
+  direction      String
+  status         String
+  riskScore      Int?
+  riskReason     String?
+  note           String    @default("")
+  beneficiaryId  String?
+  billerCode     String?
+  idempotencyKey String?   @unique
+  createdAt      DateTime  @default(now())
+  settledAt      DateTime?
+  disputes       Dispute[]
+}
+
+model Card {
+  id            String  @id @default(cuid())
+  userId        String
+  user          User    @relation(fields: [userId], references: [id])
+  label         String
+  mask          String
+  type          String
+  frozen        Boolean @default(false)
+  dailyLimit    Int     @default(100000)
+  online        Boolean @default(true)
+  contactless   Boolean @default(true)
+  international Boolean @default(false)
+  pinSet        Boolean @default(true)
+  expiry        String  @default("08/28")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  channel   String
+  title     String
+  body      String
+  kind      String
+  href      String   @default("")
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model LoanApplication {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  product          String
+  amount           Decimal
+  tenureMonths     Int
+  purpose          String
+  monthlyIncome    Decimal   @default(0)
+  status           String
+  eligibilityScore Int
+  dti              Float
+  fraudFlags       String    @default("[]")
+  aiRecommendation String
+  instalment       Decimal   @default(0)
+  createdAt        DateTime  @default(now())
+  decidedAt        DateTime?
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  category  String
+  action    String
+  actor     String
+  detail    String
+  hash      String
+  prevHash  String
+  createdAt DateTime @default(now())
+}
+
+model Dispute {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id])
+  transactionId String?
+  transaction   Transaction? @relation(fields: [transactionId], references: [id])
+  reason        String
+  status        String       @default("OPEN")
+  resolution    String       @default("")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model MfaChallenge {
+  id        String   @id @default(cuid())
+  userId    String
+  method    String
+  code      String
+  purpose   String
+  meta      String   @default("{}")
+  consumed  Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model KycDocument {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  documentType String
+  storageKey   String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+}
+
+model IdempotencyRecord {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  userId    String
+  path      String
+  response  String
+  createdAt DateTime @default(now())
+}

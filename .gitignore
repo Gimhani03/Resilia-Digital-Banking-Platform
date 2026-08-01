@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Builds & caches
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+.cache/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+!.env.production
+!**/.env.example
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Expo / Metro / React Native
+apps/mobile/.expo/
+apps/mobile/dist/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+
+# API local data
+apps/api/prisma/*.db
+apps/api/prisma/*.db-journal
+apps/api/uploads/
+apps/api/ci.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Misc
+*.local
+.vercel

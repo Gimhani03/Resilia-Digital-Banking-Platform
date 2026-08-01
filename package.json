@@ -1,0 +1,24 @@
+{
+  "name": "resilia",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "overrides": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:web": "npm run dev -w @resilia/web",
+    "dev:api": "npm run start:dev -w @resilia/api",
+    "dev:mobile": "npm run start -w @resilia/mobile",
+    "build": "npm run build -w @resilia/shared && npm run build -w @resilia/api && npm run build -w @resilia/web",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run prisma:migrate -w @resilia/api",
+    "db:seed": "npm run prisma:seed -w @resilia/api",
+    "setup": "npm install && npm run build -w @resilia/shared && cd apps/api && npx prisma migrate dev --name init --skip-seed && npm run prisma:seed"
+  }
+}
