@@ -45,12 +45,82 @@ export default function OnboardingScreen() {
   const [docUri, setDocUri] = useState<string | null>(null);
   const [docBase64, setDocBase64] = useState<string | null>(null);
   const [docMime, setDocMime] = useState("image/jpeg");
+  const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  const [selfieBase64, setSelfieBase64] = useState<string | null>(null);
+  const [selfieMime, setSelfieMime] = useState("image/jpeg");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  async function captureId(useCamera: boolean) {
+    setError("");
+    if (useCamera) {
+      const cam = await ImagePicker.requestCameraPermissionsAsync();
+      if (!cam.granted) {
+        setError("Camera permission is required to photograph your ID");
+        return;
+      }
+    } else {
+      const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!lib.granted) {
+        setError("Photo library permission is required");
+        return;
+      }
+    }
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ["images"],
+          quality: 0.7,
+          base64: true,
+        })
+      : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ["images"],
+          quality: 0.7,
+          base64: true,
+        });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      setError("Could not read image data — try again");
+      return;
+    }
+    setDocUri(asset.uri);
+    setDocBase64(asset.base64);
+    setDocMime(asset.mimeType || "image/jpeg");
+    setDocSelected(true);
+  }
+
+  async function captureSelfie() {
+    setError("");
+    const cam = await ImagePicker.requestCameraPermissionsAsync();
+    if (!cam.granted) {
+      setError("Camera permission is required for the liveness selfie");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 0.7,
+      base64: true,
+      cameraType: ImagePicker.CameraType.front,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      setError("Could not read selfie data — try again");
+      return;
+    }
+    setSelfieUri(asset.uri);
+    setSelfieBase64(asset.base64);
+    setSelfieMime(asset.mimeType || "image/jpeg");
+    setLivenessOk(true);
+  }
 
   async function submit() {
     if (password !== confirm) {
       setError("Passwords do not match");
+      return;
+    }
+    if (!docBase64 || !selfieBase64) {
+      setError("ID photo and liveness selfie are both required");
       return;
     }
     setLoading(true);
@@ -58,6 +128,7 @@ export default function OnboardingScreen() {
     try {
       const res = await api<{
         message: string;
+        kycStatus?: string;
         totpSetup?: { secret: string; otpauthUrl: string };
       }>("/auth/onboard", {
         method: "POST",
@@ -70,12 +141,17 @@ export default function OnboardingScreen() {
           phone,
           email,
           address,
-          documentBase64: docBase64 || undefined,
+          documentBase64: docBase64,
           documentMimeType: docMime,
+          selfieBase64,
+          selfieMimeType: selfieMime,
         }),
       });
       setTotpSetup(res.totpSetup || null);
-      setMsg(res.message || "Enrolment submitted for KYC review");
+      setMsg(
+        res.message ||
+          "Enrolment submitted for KYC review. Banking unlocks after officer approval.",
+      );
       setStep(6);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Onboarding failed");
@@ -142,48 +218,36 @@ export default function OnboardingScreen() {
 
           {step === 2 && (
             <>
-              <HeroTitle>Upload document</HeroTitle>
+              <HeroTitle>Photograph your ID</HeroTitle>
               <Sub>
-                Photograph the front of your {documentType} using the image picker.
+                Use the camera to capture the front of your {documentType}. Library
+                upload is available as a fallback.
               </Sub>
               <Pressable
-                onPress={async () => {
-                  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-                  if (!perm.granted) {
-                    setError("Photo library permission is required for KYC upload");
-                    return;
-                  }
-                  const result = await ImagePicker.launchImageLibraryAsync({
-                    mediaTypes: ["images"],
-                    quality: 0.7,
-                    base64: true,
-                  });
-                  if (result.canceled || !result.assets?.[0]) return;
-                  const asset = result.assets[0];
-                  setDocUri(asset.uri);
-                  setDocBase64(asset.base64 || null);
-                  setDocMime(asset.mimeType || "image/jpeg");
-                  setDocSelected(true);
-                  setError("");
-                }}
+                onPress={() => captureId(true)}
                 accessibilityRole="button"
-                accessibilityLabel="Upload ID photo"
+                accessibilityLabel="Photograph ID with camera"
                 style={[styles.upload, docSelected && styles.uploadDone]}
               >
                 <Text style={styles.uploadText}>
-                  {docSelected ? "Document selected ✓" : "Tap to select ID photo"}
+                  {docSelected ? "ID photo captured ✓" : "Tap to open camera"}
                 </Text>
                 <Text style={styles.uploadOk}>
                   {docSelected
-                    ? `${documentType} · ${docUri ? "image attached" : "ready"}`
-                    : "Opens photo library · real file bytes"}
+                    ? `${documentType} · photo ready`
+                    : "Hold steady · fill the frame with your ID"}
                 </Text>
               </Pressable>
+              <Button
+                title="Choose from photo library"
+                variant="secondary"
+                onPress={() => captureId(false)}
+              />
               <ErrorBanner message={error} />
               <Button
                 title="Continue"
                 onPress={() => setStep(3)}
-                disabled={!docSelected}
+                disabled={!docSelected || !docBase64}
               />
               <Button title="← Back" variant="ghost" onPress={() => setStep(1)} />
             </>
@@ -191,31 +255,39 @@ export default function OnboardingScreen() {
 
           {step === 3 && (
             <>
-              <HeroTitle>Liveness check</HeroTitle>
-              <Sub>Confirm you are present — look straight ahead for a match.</Sub>
+              <HeroTitle>Liveness selfie</HeroTitle>
+              <Sub>
+                Take a live selfie with the front camera. This is stored with your KYC
+                case for officer review.
+              </Sub>
               <Card style={{ backgroundColor: colors.crimsonSoft, borderColor: "rgba(201,24,74,0.2)" }}>
-                <Text style={styles.liveTitle}>Selfie frame</Text>
+                <Text style={styles.liveTitle}>Selfie capture</Text>
                 <Text style={styles.liveHint}>
                   {livenessOk
-                    ? "Match confidence 97% · passed"
-                    : "Centre your face · blink once"}
+                    ? "Selfie attached · ready for review"
+                    : "Look straight at the camera · good lighting"}
                 </Text>
                 <Pressable
-                  onPress={() => setLivenessOk(true)}
+                  onPress={captureSelfie}
                   accessibilityRole="button"
-                  accessibilityLabel="Confirm liveness selfie"
+                  accessibilityLabel="Take liveness selfie"
                   style={styles.selfie}
                 >
                   <Text style={{ fontSize: 36 }}>{livenessOk ? "✓" : "◎"}</Text>
                   <Text style={styles.selfieHint}>
-                    {livenessOk ? "Liveness confirmed" : "Tap to confirm liveness"}
+                    {livenessOk
+                      ? selfieUri
+                        ? "Selfie captured · tap to retake"
+                        : "Selfie captured"
+                      : "Tap to open front camera"}
                   </Text>
                 </Pressable>
               </Card>
+              <ErrorBanner message={error} />
               <Button
                 title="Continue"
                 onPress={() => setStep(4)}
-                disabled={!livenessOk}
+                disabled={!livenessOk || !selfieBase64}
               />
               <Button title="← Back" variant="ghost" onPress={() => setStep(2)} />
             </>
@@ -318,15 +390,15 @@ export default function OnboardingScreen() {
 
           {step === 6 && (
             <>
-              <HeroTitle>You are almost in</HeroTitle>
+              <HeroTitle>Submitted for review</HeroTitle>
               <Sub>
                 {msg ||
-                  "Your application is with KYC. Add the TOTP secret below before first login."}
+                  "Your ID and selfie are with KYC officers. Add the TOTP secret below, then sign in. Transfers unlock after approval."}
               </Sub>
               <Card style={{ backgroundColor: colors.okSoft, borderColor: "rgba(15,122,76,0.25)" }}>
-                <Text style={styles.successTitle}>Enrolment received</Text>
+                <Text style={styles.successTitle}>Status · PENDING REVIEW</Text>
                 <Text style={styles.successBody}>
-                  Document · Liveness · Details · Credentials submitted securely.
+                  Document · Selfie · Details · Credentials stored securely for officer review.
                 </Text>
               </Card>
               {totpSetup ? (

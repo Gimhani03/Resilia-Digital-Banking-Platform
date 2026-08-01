@@ -589,7 +589,16 @@ export class IdentityService {
     address?: string;
     documentBase64?: string;
     documentMimeType?: string;
+    selfieBase64?: string;
+    selfieMimeType?: string;
   }) {
+    if (!input.documentBase64?.trim()) {
+      throw new BadRequestException("ID document photo is required");
+    }
+    if (!input.selfieBase64?.trim()) {
+      throw new BadRequestException("Liveness selfie is required");
+    }
+
     const existing = await this.prisma.user.findUnique({
       where: { username: input.username },
     });
@@ -614,7 +623,7 @@ export class IdentityService {
         phoneLast4,
         address: input.address || "",
         role: "CUSTOMER",
-        kycStatus: "VERIFIED",
+        kycStatus: "PENDING_REVIEW",
         totpSecret,
         totpEnabled: true,
         accounts: {
@@ -652,19 +661,22 @@ export class IdentityService {
       },
     });
 
-    if (input.documentBase64) {
-      await this.uploadKycDocument(user.id, {
-        documentType: input.documentType,
-        mimeType: input.documentMimeType || "image/jpeg",
-        base64: input.documentBase64,
-      });
-    }
+    await this.uploadKycDocument(user.id, {
+      documentType: input.documentType,
+      mimeType: input.documentMimeType || "image/jpeg",
+      base64: input.documentBase64,
+    });
+    await this.uploadKycDocument(user.id, {
+      documentType: "SELFIE_LIVENESS",
+      mimeType: input.selfieMimeType || "image/jpeg",
+      base64: input.selfieBase64,
+    });
 
     await this.audit.record({
       category: "Identity",
-      action: "ekyc.completed",
+      action: "ekyc.submitted",
       actor: user.username,
-      detail: `Document ${input.documentType} · TOTP enrolled · welcome LKR 5000`,
+      detail: `Document ${input.documentType} + selfie · pending officer review`,
     });
 
     return {
@@ -673,13 +685,30 @@ export class IdentityService {
       fullName: user.fullName,
       email: user.email,
       phone: user.phone,
+      kycStatus: "PENDING_REVIEW",
       totpSetup: {
         secret: totpSecret,
         otpauthUrl: authenticator.keyuri(user.username, "RESILIA", totpSecret),
       },
-      message: "e-KYC verified · scan TOTP QR before first login",
+      message:
+        "e-KYC submitted · add TOTP before login · banking unlocks after officer approval",
       ...(this.demo() ? { demoOtp: DEMO_OTP } : {}),
     };
+  }
+
+  async requireKycVerified(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new BadRequestException("User not found");
+    if (user.role === "OFFICER") return;
+    if (user.kycStatus === "VERIFIED") return;
+    if (user.kycStatus === "REJECTED") {
+      throw new BadRequestException(
+        "KYC was rejected. Re-apply or contact support before banking.",
+      );
+    }
+    throw new BadRequestException(
+      "KYC is pending officer review. Transfers and payments unlock after approval.",
+    );
   }
 
   async uploadKycDocument(

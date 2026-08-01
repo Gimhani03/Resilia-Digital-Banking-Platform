@@ -37,13 +37,14 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow RESILIA to scan payment QR codes."
+          "cameraPermission": "Allow RESILIA to scan QR codes and capture KYC photos."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow RESILIA to upload KYC documents."
+          "photosPermission": "Allow RESILIA to upload KYC documents from your library.",
+          "cameraPermission": "Allow RESILIA to photograph your ID and take a liveness selfie."
         }
       ]
     ]

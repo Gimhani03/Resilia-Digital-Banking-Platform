@@ -12,6 +12,21 @@ export class LoansService {
     private readonly audit: AuditService,
   ) {}
 
+  private async requireKycVerified(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new BadRequestException("User not found");
+    if (user.role === "OFFICER") return;
+    if (user.kycStatus === "VERIFIED") return;
+    if (user.kycStatus === "REJECTED") {
+      throw new BadRequestException(
+        "KYC was rejected. Re-apply or contact support before applying for credit.",
+      );
+    }
+    throw new BadRequestException(
+      "KYC is pending officer review. Loan applications unlock after approval.",
+    );
+  }
+
   estimate(amount: number, tenureMonths: number, income: number) {
     const instalment = Number(((amount * 1.12) / tenureMonths).toFixed(2));
     const dti = income > 0 ? instalment / income : 1;
@@ -42,6 +57,7 @@ export class LoansService {
       monthlyIncome: number;
     },
   ) {
+    await this.requireKycVerified(userId);
     const est = this.estimate(
       input.amount,
       input.tenureMonths,

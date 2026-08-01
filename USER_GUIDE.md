@@ -174,9 +174,15 @@ If approved, money is disbursed into your account (see Accounts / History).
 
 ### 2.10 Onboarding (new customer)
 
-1. Open **Onboarding**  
-2. Follow steps: identity details → document type → upload ID image → password / MFA enrolment  
-3. Finish and sign in with the new credentials / TOTP setup shown  
+1. Open **Onboarding** (or Help → **Open a new account**)  
+2. Choose ID type  
+3. **Photograph your ID** with the camera (or library fallback)  
+4. **Take a live selfie** with the front camera  
+5. Enter personal details + username/password  
+6. Submit → status **PENDING REVIEW**  
+7. Add the shown **TOTP secret**, then sign in  
+
+Transfers, bills, and loans stay locked until an officer **Approves KYC** in the ops console (`/ops/kyc`). You will get a notification when decided.
 
 ---
 
@@ -195,11 +201,20 @@ Customer accounts should use the mobile app (or customer web paths), not the sta
 
 ### 3.2 Security overview
 
-- Platform uptime / screening volume (demo KPIs)  
-- **Active fraud holds** and **open disputes** counts  
+- Platform uptime  
+- **Pending KYC**, **active fraud holds**, and **open disputes** counts  
 - Service health list and alert cards  
 
-### 3.3 Disputes (officer)
+### 3.3 KYC review (officer)
+
+1. Sidebar → **KYC review**  
+2. Filter **PENDING REVIEW**  
+3. Open a case — see customer details, ID photo, and liveness selfie  
+4. Write a decision note  
+5. **Approve KYC** (unlocks banking) or **Reject KYC**  
+6. Customer is notified  
+
+### 3.4 Disputes (officer)
 
 1. Sidebar → **Disputes**  
 2. Filter **OPEN** (or RESOLVED / REJECTED / ALL)  
@@ -211,14 +226,14 @@ Customer accounts should use the mobile app (or customer web paths), not the sta
    - **Freeze** card or account from the case while reviewing  
 6. Customer is notified of the outcome  
 
-### 3.4 Loan officer
+### 3.5 Loan officer
 
 1. Sidebar → **Loan officer**  
 2. Select an application from the queue  
 3. Review amount, eligibility, DTI, AI recommendation, flags  
 4. **Approve** (disburses to customer account) or **Reject**  
 
-### 3.5 Audit trail
+### 3.6 Audit trail
 
 1. Sidebar → **Audit trail**  
 2. Browse tamper-evident events (payments, auth, security, admin, etc.)  
@@ -259,8 +274,10 @@ Customer accounts should use the mobile app (or customer web paths), not the sta
 | Freeze own card/account | Yes | Yes (from dispute case) |
 | Raise dispute | Yes | — |
 | Resolve dispute / refund | — | Yes |
-| Apply for loan | Yes | — |
+| Apply for loan | Yes (after KYC verified) | — |
 | Approve / reject loan | — | Yes |
+| Submit e-KYC (ID + selfie) | Yes | — |
+| Approve / reject KYC | — | Yes |
 | Release / reject fraud hold | Yes (own txn) | Overview of holds |
 | Audit log | — | Yes |
 

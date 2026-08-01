@@ -44,8 +44,10 @@ class OnboardDto {
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() address?: string;
-  @IsOptional() @IsString() documentBase64?: string;
+  @IsString() documentBase64!: string;
   @IsOptional() @IsString() documentMimeType?: string;
+  @IsString() selfieBase64!: string;
+  @IsOptional() @IsString() selfieMimeType?: string;
 }
 
 class DeviceDecisionDto {

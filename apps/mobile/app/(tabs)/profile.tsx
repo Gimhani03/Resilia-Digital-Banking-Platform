@@ -66,6 +66,31 @@ export default function ProfileScreen() {
           </View>
           <HeroTitle>{user?.fullName}</HeroTitle>
           <Sub>Trusted devices, pending approvals, and MFA methods (FR-02 / FR-03).</Sub>
+          {!!user?.kycStatus && (
+            <Card style={{ marginBottom: 12 }}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <Text style={{ fontFamily: fonts.sansBold, color: colors.navy, fontSize: 13 }}>
+                  KYC status
+                </Text>
+                <Badge
+                  tone={
+                    user.kycStatus === "VERIFIED"
+                      ? "ok"
+                      : user.kycStatus === "REJECTED"
+                        ? "danger"
+                        : "warn"
+                  }
+                >
+                  {user.kycStatus.replace(/_/g, " ")}
+                </Badge>
+              </View>
+              {user.kycStatus === "PENDING_REVIEW" && (
+                <Text style={{ fontFamily: fonts.sans, color: colors.muted, fontSize: 12, marginTop: 6 }}>
+                  Transfers and loans unlock after an officer approves your ID + selfie.
+                </Text>
+              )}
+            </Card>
+          )}
 
           <View style={styles.grid}>
             {[

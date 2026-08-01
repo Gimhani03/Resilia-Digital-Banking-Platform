@@ -56,6 +56,13 @@ export type ResiliaEvent =
       refunded: boolean;
       resolution: string;
       actor: string;
+    }
+  | {
+      type: "kyc.decided";
+      userId: string;
+      status: "VERIFIED" | "REJECTED";
+      note: string;
+      actor: string;
     };
 
 type Handler = (event: ResiliaEvent) => void | Promise<void>;

@@ -242,6 +242,7 @@ export class PaymentsService {
         path: "payments.transfer",
       },
       async () => {
+        await this.identity.requireKycVerified(userId);
         await this.identity.consumeStepUp(
           userId,
           input.mfaChallengeId,
@@ -339,6 +340,7 @@ export class PaymentsService {
       this.prisma,
       { key: input.idempotencyKey, userId, path: "payments.bill" },
       async () => {
+        await this.identity.requireKycVerified(userId);
         await this.identity.consumeStepUp(userId, input.mfaChallengeId, "BILL");
 
         const account = await this.prisma.account.findFirst({
@@ -438,6 +440,7 @@ export class PaymentsService {
       this.prisma,
       { key: input.idempotencyKey, userId, path: "payments.internal" },
       async () => {
+        await this.identity.requireKycVerified(userId);
         await this.identity.consumeStepUp(
           userId,
           input.mfaChallengeId,

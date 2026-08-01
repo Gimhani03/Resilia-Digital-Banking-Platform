@@ -1,5 +1,5 @@
 import { Global, Injectable, Logger, Module, OnModuleInit } from "@nestjs/common";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, writeFile, readFile } from "fs/promises";
 import { join } from "path";
 import { createHash, randomUUID } from "crypto";
 
@@ -62,6 +62,7 @@ export interface ObjectStore {
     mimeType: string;
   }): Promise<{ key: string; url: string }>;
   getUrl(key: string): string;
+  read?(key: string): Promise<Buffer | null>;
 }
 
 @Injectable()
@@ -87,6 +88,14 @@ export class LocalObjectStore implements ObjectStore {
 
   getUrl(key: string) {
     return `file://${join(this.root, key)}`;
+  }
+
+  async read(key: string): Promise<Buffer | null> {
+    try {
+      return await readFile(join(this.root, key));
+    } catch {
+      return null;
+    }
   }
 }
 

@@ -162,7 +162,7 @@ After `npm run setup` / seed, the console prints:
 
 | ID | Coverage |
 |----|----------|
-| FR-01 | Onboarding / e-KYC document upload |
+| FR-01 | Onboarding with camera ID + selfie · pending officer KYC review |
 | FR-02 / FR-03 | MFA login + device step-up |
 | FR-04 | Balances + categorised history |
 | FR-05 | Internal + beneficiary transfers |

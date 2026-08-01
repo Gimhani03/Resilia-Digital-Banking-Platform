@@ -18,6 +18,7 @@ import LoanPage from "./pages/LoanPage";
 import OpsConsolePage from "./pages/OpsConsolePage";
 import LoanOfficerPage from "./pages/LoanOfficerPage";
 import DisputeOfficerPage from "./pages/DisputeOfficerPage";
+import KycOfficerPage from "./pages/KycOfficerPage";
 import AuditTrailPage from "./pages/AuditTrailPage";
 import UssdAgentPage from "./pages/UssdAgentPage";
 import LandingPage from "./pages/LandingPage";
@@ -76,6 +77,7 @@ export default function App() {
         }
       >
         <Route index element={<OpsConsolePage />} />
+        <Route path="kyc" element={<KycOfficerPage />} />
         <Route path="disputes" element={<DisputeOfficerPage />} />
         <Route path="loans" element={<LoanOfficerPage />} />
         <Route path="audit" element={<AuditTrailPage />} />

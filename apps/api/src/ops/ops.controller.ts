@@ -33,6 +33,15 @@ class FreezeFromDisputeDto {
   targetId!: string;
 }
 
+class DecideKycDto {
+  @IsIn(["VERIFIED", "REJECTED"])
+  status!: "VERIFIED" | "REJECTED";
+
+  @IsString()
+  @MinLength(3)
+  note!: string;
+}
+
 @Controller("ops")
 @UseGuards(RolesGuard)
 @Roles("OFFICER")
@@ -42,6 +51,29 @@ export class OpsController {
   @Get("overview")
   overview() {
     return this.ops.overview();
+  }
+
+  @Get("kyc")
+  listKyc(@Query("status") status?: string) {
+    return this.ops.listKyc(status);
+  }
+
+  @Get("kyc/:userId")
+  getKyc(@Param("userId") userId: string) {
+    return this.ops.getKyc(userId);
+  }
+
+  @Post("kyc/:userId/decide")
+  decideKyc(
+    @Param("userId") userId: string,
+    @Body() body: DecideKycDto,
+    @Req() req: { user: { sub: string; username?: string } },
+  ) {
+    return this.ops.decideKyc(
+      userId,
+      body,
+      req.user.username || req.user.sub || "officer",
+    );
   }
 
   @Get("disputes")

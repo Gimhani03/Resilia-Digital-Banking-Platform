@@ -73,6 +73,20 @@ export class NotificationsService {
           href: "/security",
         });
       }
+      if (event.type === "kyc.decided") {
+        const ok = event.status === "VERIFIED";
+        await this.createAndSend(event.userId, {
+          channel: "push",
+          kind: "security",
+          title: ok ? "KYC verified" : "KYC rejected",
+          body:
+            event.note ||
+            (ok
+              ? "Your identity was approved. Full banking is unlocked."
+              : "Your identity check was rejected. Contact support or re-apply."),
+          href: "/profile",
+        });
+      }
     });
   }
 

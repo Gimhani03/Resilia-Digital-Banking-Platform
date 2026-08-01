@@ -22,6 +22,9 @@ export class OpsService {
     const openDisputes = await this.prisma.dispute.count({
       where: { status: "OPEN" },
     });
+    const pendingKyc = await this.prisma.user.count({
+      where: { role: "CUSTOMER", kycStatus: "PENDING_REVIEW" },
+    });
 
     return {
       uptime: "99.98%",
@@ -29,6 +32,7 @@ export class OpsService {
       activeFraudHolds: holds,
       highPriorityHolds: high,
       openDisputes,
+      pendingKyc,
       drReady: true,
       rpoMinutes: 2,
       rtoMinutes: 11,
@@ -69,6 +73,15 @@ export class OpsService {
                 severity: "MED" as const,
                 title: `${openDisputes} open customer dispute${openDisputes === 1 ? "" : "s"}`,
                 detail: "Awaiting officer review in Disputes queue",
+              },
+            ]
+          : []),
+        ...(pendingKyc > 0
+          ? [
+              {
+                severity: "MED" as const,
+                title: `${pendingKyc} KYC case${pendingKyc === 1 ? "" : "s"} pending`,
+                detail: "Awaiting officer review in KYC queue",
               },
             ]
           : []),
@@ -327,6 +340,138 @@ export class OpsService {
       targetId: account.id,
     });
     return { target: "account" as const, id: updated.id, frozen: true };
+  }
+
+  async listKyc(status?: string) {
+    const where =
+      status && status !== "ALL"
+        ? { role: "CUSTOMER" as const, kycStatus: status.toUpperCase() }
+        : { role: "CUSTOMER" as const };
+    const rows = await this.prisma.user.findMany({
+      where,
+      orderBy: [{ kycStatus: "asc" }, { createdAt: "desc" }],
+      include: { kycDocuments: { orderBy: { createdAt: "desc" } } },
+    });
+    return rows.map((u) => this.mapKycCase(u));
+  }
+
+  async getKyc(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, role: "CUSTOMER" },
+      include: { kycDocuments: { orderBy: { createdAt: "desc" } } },
+    });
+    if (!user) throw new BadRequestException("KYC case not found");
+
+    const docs = [];
+    for (const d of user.kycDocuments) {
+      const preview = await this.readDocPreview(d.storageKey, d.mimeType);
+      docs.push({
+        id: d.id,
+        documentType: d.documentType,
+        mimeType: d.mimeType,
+        sizeBytes: d.sizeBytes,
+        createdAt: d.createdAt.toISOString(),
+        previewDataUrl: preview,
+      });
+    }
+
+    return { ...this.mapKycCase(user), documents: docs };
+  }
+
+  async decideKyc(
+    userId: string,
+    input: { status: "VERIFIED" | "REJECTED"; note: string },
+    actor: string,
+  ) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, role: "CUSTOMER" },
+    });
+    if (!user) throw new BadRequestException("KYC case not found");
+    if (user.kycStatus !== "PENDING_REVIEW") {
+      throw new BadRequestException("KYC already decided");
+    }
+    const note = (input.note || "").trim();
+    if (!note) throw new BadRequestException("Decision note is required");
+    if (input.status !== "VERIFIED" && input.status !== "REJECTED") {
+      throw new BadRequestException("Invalid status");
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { kycStatus: input.status },
+      include: { kycDocuments: true },
+    });
+
+    await this.audit.record({
+      category: "Identity",
+      action:
+        input.status === "VERIFIED" ? "ekyc.approved" : "ekyc.rejected",
+      actor,
+      detail: `${user.fullName} · ${note}`,
+    });
+
+    await this.bus.publish({
+      type: "kyc.decided",
+      userId,
+      status: input.status,
+      note,
+      actor,
+    });
+
+    return this.mapKycCase(updated);
+  }
+
+  private async readDocPreview(storageKey: string, mimeType: string) {
+    try {
+      const { LocalObjectStore } = await import("../providers/providers.module");
+      const store = new LocalObjectStore();
+      const bytes = await store.read?.(storageKey);
+      if (!bytes || bytes.length === 0) return undefined;
+      if (bytes.length > 2_500_000) return undefined;
+      const b64 = bytes.toString("base64");
+      return `data:${mimeType || "image/jpeg"};base64,${b64}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private mapKycCase(u: {
+    id: string;
+    username: string;
+    fullName: string;
+    email: string;
+    phone: string;
+    nationalId: string;
+    address: string;
+    kycStatus: string;
+    createdAt: Date;
+    kycDocuments?: {
+      id: string;
+      documentType: string;
+      mimeType: string;
+      sizeBytes: number;
+      createdAt: Date;
+    }[];
+  }) {
+    return {
+      userId: u.id,
+      username: u.username,
+      fullName: u.fullName,
+      email: u.email,
+      phone: u.phone,
+      nationalId: u.nationalId,
+      address: u.address,
+      kycStatus: u.kycStatus,
+      createdAt: u.createdAt.toISOString(),
+      documentCount: u.kycDocuments?.length ?? 0,
+      documents: (u.kycDocuments || []).map((d) => ({
+        id: d.id,
+        documentType: d.documentType,
+        mimeType: d.mimeType,
+        sizeBytes: d.sizeBytes,
+        createdAt: d.createdAt.toISOString(),
+      })),
+    };
   }
 
   private mapDispute(d: {

@@ -9,6 +9,7 @@ type Overview = {
   activeFraudHolds: number;
   highPriorityHolds: number;
   openDisputes?: number;
+  pendingKyc?: number;
   rpoMinutes: number;
   rtoMinutes: number;
   services: { name: string; latencyMs: number | null; status: string }[];
@@ -41,7 +42,13 @@ export default function OpsConsolePage() {
       <div className="grid grid-cols-4 gap-3.5 mb-4">
         {[
           { k: "Platform uptime", v: data?.uptime ?? "…", s: "30-day rolling", ok: true },
-          { k: "Txn screened / min", v: data?.txnPerMin?.toLocaleString() ?? "…", s: "Fraud service · bus", ok: false },
+          {
+            k: "Pending KYC",
+            v: String(data?.pendingKyc ?? "…"),
+            s: "Identity cases awaiting review",
+            warn: (data?.pendingKyc ?? 0) > 0,
+            ok: (data?.pendingKyc ?? 0) === 0,
+          },
           {
             k: "Active fraud holds",
             v: String(data?.activeFraudHolds ?? "…"),

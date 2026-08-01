@@ -3,6 +3,7 @@ import { useAuth } from "../lib/auth";
 
 const nav = [
   { to: "/ops", label: "Security overview", icon: "⌁", end: true },
+  { to: "/ops/kyc", label: "KYC review", icon: "◉" },
   { to: "/ops/disputes", label: "Disputes", icon: "⚑" },
   { to: "/ops/loans", label: "Loan officer", icon: "◇" },
   { to: "/ops/audit", label: "Audit trail", icon: "≡" },
