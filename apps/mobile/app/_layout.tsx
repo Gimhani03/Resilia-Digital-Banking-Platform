@@ -20,10 +20,13 @@ const PUBLIC_SEGMENTS = new Set([
   "help",
 ]);
 
-/** Auth-only entry screens — bounce signed-in users away */
+/**
+ * Auth-only entry screens — bounce signed-in users away. Onboarding is absent
+ * on purpose: signed-in customers can still open the e-KYC flow from Help to
+ * enrol another account.
+ */
 const AUTH_ENTRY_SEGMENTS = new Set([
   "signin",
-  "onboarding",
   "forgot-password",
   "reset-password",
 ]);

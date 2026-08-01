@@ -15,6 +15,7 @@ import {
 } from "../src/components/ui";
 import * as ImagePicker from "expo-image-picker";
 import { api } from "../src/lib/api";
+import { useAuth } from "../src/lib/auth";
 import { colors, fonts } from "../src/theme";
 
 const DOC_TYPES = ["National ID", "Passport", "Driving licence"] as const;
@@ -22,6 +23,7 @@ const STEPS = 6;
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const { token, logout } = useAuth();
   const [step, setStep] = useState(1);
   const [documentType, setDocumentType] =
     useState<(typeof DOC_TYPES)[number]>("National ID");
@@ -338,7 +340,13 @@ export default function OnboardingScreen() {
                   </Text>
                 </Card>
               ) : null}
-              <Button title="Go to sign in" onPress={() => router.replace("/signin")} />
+              <Button
+                title="Go to sign in"
+                onPress={async () => {
+                  if (token) await logout();
+                  router.replace("/signin");
+                }}
+              />
             </>
           )}
         </Screen>
