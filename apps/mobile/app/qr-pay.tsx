@@ -31,16 +31,52 @@ import {
 } from "../src/lib/stepup";
 import { useAuth } from "../src/lib/auth";
 import {
+  buildEmvQr,
   calculateQrTip,
+  formatQrAmount,
   parseEmvQr,
+  parseSimpleQr,
   type EmvQrData,
 } from "../src/lib/emvqr";
 import { colors, fonts } from "../src/theme";
 
 const DEMO_QR = [
-  { id: "keells", label: "Keells Super · Bambalapitiya", payload: "QR|KEELLS|BAM|INV-8821" },
-  { id: "pickme", label: "PickMe Foods", payload: "QR|PICKME|COL|ORD-44102" },
-  { id: "dialog", label: "Dialog WiFi hotspot", payload: "QR|DIALOG|WIFI|TOPUP" },
+  {
+    id: "keells",
+    label: "Keells Super · Bambalapitiya",
+    payload: buildEmvQr({
+      merchantName: "KEELLS SUPER",
+      merchantCity: "BAMBALAPITIYA",
+      merchantId: "MID-KEELLS-BAM",
+      amount: 1250,
+      reference: "INV-8821",
+      dynamic: true,
+    }),
+  },
+  {
+    id: "pickme",
+    label: "PickMe Foods",
+    payload: buildEmvQr({
+      merchantName: "PICKME FOODS",
+      merchantCity: "COLOMBO",
+      merchantId: "MID-PICKME-COL",
+      amount: 890,
+      reference: "ORD-44102",
+      dynamic: true,
+    }),
+  },
+  {
+    id: "dialog",
+    label: "Dialog WiFi hotspot",
+    payload: buildEmvQr({
+      merchantName: "DIALOG WIFI",
+      merchantCity: "COLOMBO",
+      merchantId: "MID-DIALOG-WIFI",
+      amount: 500,
+      reference: "TOPUP",
+      dynamic: true,
+    }),
+  },
 ];
 
 export default function QrPayScreen() {
@@ -54,6 +90,7 @@ export default function QrPayScreen() {
   const [amount, setAmount] = useState("");
   const [tip, setTip] = useState("");
   const [qrInfo, setQrInfo] = useState<EmvQrData | null>(null);
+  const [amountFromQr, setAmountFromQr] = useState(false);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [accountId, setAccountId] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -83,18 +120,25 @@ export default function QrPayScreen() {
     const clean = raw.trim();
     try {
       const parsed = parseEmvQr(clean);
+      const simple = parsed ? null : parseSimpleQr(clean);
+
       if (parsed && !parsed.crcValid) {
         setError("Invalid merchant QR checksum. Payment blocked for your safety.");
         return;
       }
+
+      const qrAmount = parsed?.amount ?? simple?.amount;
       setQrInfo(parsed);
+      setAmountFromQr(qrAmount != null);
       setPayload(clean);
       setMerchant(
         parsed
           ? [parsed.merchantName, parsed.merchantCity].filter(Boolean).join(" · ")
-          : label || `Merchant · ${clean.slice(0, 18)}`,
+          : simple?.merchant
+            ? [simple.merchant, simple.reference].filter(Boolean).join(" · ")
+            : label || `Merchant · ${clean.slice(0, 18)}`,
       );
-      setAmount(parsed?.amount?.toFixed(2) || "");
+      setAmount(formatQrAmount(qrAmount));
       setTip("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Invalid merchant QR");
@@ -302,18 +346,22 @@ export default function QrPayScreen() {
                   value={amount}
                   onChangeText={setAmount}
                   keyboardType="decimal-pad"
-                  editable={!qrInfo?.amount}
+                  editable={!amountFromQr}
                   style={{
                     fontFamily: fonts.display,
                     fontSize: 24,
-                    opacity: qrInfo?.amount ? 0.7 : 1,
+                    opacity: amountFromQr ? 0.7 : 1,
                   }}
                   accessibilityLabel="Amount"
                 />
               </Field>
-              {qrInfo?.amount ? (
+              {amountFromQr ? (
                 <Text style={styles.lockedHint}>
                   Amount supplied by the merchant QR and cannot be edited.
+                </Text>
+              ) : qrInfo?.initiationMethod === "static" ? (
+                <Text style={styles.lockedHint}>
+                  Static merchant QR — enter the amount you want to pay.
                 </Text>
               ) : null}
               {qrInfo?.tip.type === "prompt" ? (
@@ -367,6 +415,7 @@ export default function QrPayScreen() {
                   setScanned(false);
                   setMfaOpen(false);
                   setQrInfo(null);
+                  setAmountFromQr(false);
                   setPayload("");
                   setMerchant("");
                   setAmount("");

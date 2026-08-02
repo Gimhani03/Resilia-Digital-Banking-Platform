@@ -60,9 +60,68 @@ function map(fields: Tlv[]) {
 }
 
 function number(value?: string) {
-  if (!value || !/^\d+(?:\.\d+)?$/.test(value)) return undefined;
-  const parsed = Number(value);
+  const clean = value?.trim();
+  if (!clean || !/^\d+(?:\.\d+)?$/.test(clean)) return undefined;
+  const parsed = Number(clean);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function tlv(tag: string, value: string) {
+  return tag + String(value.length).padStart(2, "0") + value;
+}
+
+/** Format a QR amount for the payment input (no trailing .00 on whole numbers). */
+export function formatQrAmount(value?: number) {
+  if (value == null || !Number.isFinite(value)) return "";
+  return value % 1 === 0 ? String(value) : value.toFixed(2);
+}
+
+/** Build a valid EMVCo merchant QR (for demos / test scans). */
+export function buildEmvQr(input: {
+  merchantName: string;
+  merchantCity?: string;
+  merchantId: string;
+  amount?: number;
+  reference?: string;
+  dynamic?: boolean;
+}) {
+  const account = tlv("00", "LANKAQR") + tlv("01", input.merchantId);
+  let payload =
+    tlv("00", "01") +
+    tlv("01", input.dynamic ? "12" : "11") +
+    tlv("26", account) +
+    tlv("52", "5411") +
+    tlv("53", "144");
+  if (input.amount != null) payload += tlv("54", input.amount.toFixed(2));
+  payload += tlv("58", "LK") + tlv("59", input.merchantName);
+  if (input.merchantCity) payload += tlv("60", input.merchantCity);
+  if (input.reference) payload += tlv("62", tlv("05", input.reference));
+  payload += "6304";
+  payload += crc16(payload);
+  return payload;
+}
+
+/** Legacy demo format: QR|MERCHANT|1250|REF */
+export function parseSimpleQr(raw: string) {
+  if (!raw.startsWith("QR|")) return null;
+  const parts = raw.split("|");
+  if (parts.length < 2) return null;
+
+  let amount: number | undefined;
+  let reference: string | undefined;
+  for (let index = 2; index < parts.length; index += 1) {
+    const part = parts[index]?.trim();
+    if (!part) continue;
+    const parsed = number(part);
+    if (parsed != null && amount == null) amount = parsed;
+    else reference = part;
+  }
+
+  return {
+    merchant: parts[1]?.trim(),
+    amount,
+    reference,
+  };
 }
 
 /** EMVCo Merchant-Presented QR uses CRC-16/CCITT-FALSE. */
