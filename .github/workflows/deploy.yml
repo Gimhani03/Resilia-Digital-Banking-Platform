@@ -70,14 +70,11 @@ jobs:
       - name: Build web
         run: npm run build -w @resilia/web
 
-      # Scoped to deployed code; apps/mobile does not ship. The built images
-      # are scanned separately in the build job, which is the real gate.
       - name: Trivy — blocking vulnerability gate
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          skip-dirs: apps/mobile
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"

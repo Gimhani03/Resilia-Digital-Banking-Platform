@@ -86,31 +86,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Blocks on what actually ships. apps/mobile is out of deploy scope (see
-      # DEPLOYMENT.md §9) and its Expo build toolchain pins a vulnerable
-      # transitive postcss that no deployed artifact contains — blocking the
-      # release on it would be a false signal. Mobile is still scanned below,
-      # non-blocking, and the authoritative gate is the built-image scan in
-      # deploy.yml, which sees only what is really in the containers.
-      - name: Trivy — dependency scan (blocking, deployed code)
+      - name: Trivy — dependency scan (blocking)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          skip-dirs: apps/mobile
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
-          format: table
-
-      - name: Trivy — full repository scan (non-blocking, includes mobile)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "0"
           format: table
 
       - name: Trivy — Terraform misconfiguration scan
