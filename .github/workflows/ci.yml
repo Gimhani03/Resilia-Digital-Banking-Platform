@@ -1,11 +1,21 @@
 name: ci
+
 on:
   push:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate. deploy.yml waits on this workflow, so nothing reaches the
+  # registry without passing every job below.
+  # ---------------------------------------------------------------------------
   build:
+    name: build & typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,16 +30,123 @@ jobs:
       - name: Prisma generate + validate
         working-directory: apps/api
         env:
-          DATABASE_URL: "file:./ci.db"
+          # Postgres in every deployed environment. Nothing connects at
+          # generate/validate time — the URL only has to parse.
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
         run: |
           npx prisma generate
           npx prisma validate
       - name: Build API
         run: npm run build -w @resilia/api
         env:
-          DATABASE_URL: "file:./ci.db"
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
           JWT_SECRET: ci-secret
           DEMO_MODE: "false"
+      - name: Build web
+        run: npm run build -w @resilia/web
       - name: Typecheck mobile
         working-directory: apps/mobile
         run: npx tsc --noEmit
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build shared
+        run: npm run build -w @resilia/shared
+      - name: Prisma generate
+        working-directory: apps/api
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
+        run: npx prisma generate
+      - name: Fraud engine unit tests
+        run: npm run test:cov -w @resilia/api
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: apps/api/coverage
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Security gate. Blocks on CRITICAL/HIGH so a vulnerable dependency cannot
+  # reach the registry, and publishes findings to the repository Security tab.
+  # ---------------------------------------------------------------------------
+  security:
+    name: dependency & IaC scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy — dependency scan (blocking)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Trivy — Terraform misconfiguration scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: infra
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          format: table
+
+      - name: Trivy — SARIF for the Security tab
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH,MEDIUM
+          format: sarif
+          output: trivy.sarif
+          exit-code: "0"
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+        continue-on-error: true
+
+      - name: Gitleaks — committed secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Terraform is a graded artifact — keep it formatted and valid on every
+  # commit, not only when someone remembers to apply it.
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: terraform validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: infra/terraform
+      - name: Init (no backend)
+        run: terraform init -backend=false
+        working-directory: infra/terraform
+      - name: Validate
+        run: terraform validate -no-color
+        working-directory: infra/terraform

@@ -1,3 +1,4 @@
+import { controllersFor } from "../config/service-role";
 import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { IdentityService } from "./identity.service";
@@ -19,7 +20,7 @@ if (process.env.NODE_ENV === "production" && !jwtSecret) {
     }),
   ],
   providers: [IdentityService, AuthGuard, RolesGuard],
-  controllers: [IdentityController],
+  controllers: controllersFor("auth", [IdentityController]),
   exports: [IdentityService, AuthGuard, RolesGuard],
 })
 export class IdentityModule {}

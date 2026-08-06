@@ -1,3 +1,4 @@
+import { controllersFor } from "../config/service-role";
 import { Module, OnModuleInit } from "@nestjs/common";
 import { NotificationsService } from "./notifications.service";
 import { NotificationsController } from "./notifications.controller";
@@ -5,7 +6,7 @@ import { AuthGuard } from "../identity/auth.guard";
 
 @Module({
   providers: [NotificationsService, AuthGuard],
-  controllers: [NotificationsController],
+  controllers: controllersFor("notifications", [NotificationsController]),
   exports: [NotificationsService],
 })
 export class NotificationsModule implements OnModuleInit {

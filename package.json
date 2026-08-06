@@ -10,7 +10,7 @@
     "react-dom": "19.1.0"
   },
   "scripts": {
-    "dev": "npm run dev --workspaces --if-present",
+    "dev": "concurrently \"npm:dev:api\" \"npm:dev:web\" \"npm:dev:mobile\"",
     "dev:web": "npm run dev -w @resilia/web",
     "dev:api": "npm run start:dev -w @resilia/api",
     "dev:mobile": "npm run start -w @resilia/mobile",
@@ -20,5 +20,11 @@
     "db:migrate": "npm run prisma:migrate -w @resilia/api",
     "db:seed": "npm run prisma:seed -w @resilia/api",
     "setup": "npm install && npm run build -w @resilia/shared && cd apps/api && npx prisma migrate dev --name init --skip-seed && npm run prisma:seed"
+  },
+  "devDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.62.4",
+    "@tailwindcss/oxide-win32-x64-msvc": "^4.3.3",
+    "concurrently": "^10.0.4",
+    "lightningcss-win32-x64-msvc": "^1.33.0"
   }
 }

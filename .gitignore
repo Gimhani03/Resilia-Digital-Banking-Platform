@@ -10,11 +10,28 @@ coverage/
 .cache/
 
 # Environment & secrets
+# Deployed configuration comes from Key Vault via Container Apps secret
+# references, never from a committed env file. .env.production was retired for
+# exactly this reason — see DEPLOYMENT.md, "Secret management".
 .env
 .env.*
 !.env.example
-!.env.production
 !**/.env.example
+
+# Terraform — state contains generated passwords and connection strings in
+# plaintext and must never be committed.
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+tfplan
+crash.log
+
+# Security scan output
+trivy.sarif
+sbom-*.json
 
 # Logs & OS
 *.log

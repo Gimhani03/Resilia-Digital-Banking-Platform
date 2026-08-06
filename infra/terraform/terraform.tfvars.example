@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars and adjust. Never commit terraform.tfvars — it is
+# gitignored, and the two sensitive variables below are generated at apply time
+# when left unset, which is the recommended path.
+
+location          = "southeastasia"
+environment       = "prod"
+github_repository = "ruwithma/Resilia-Digital-Banking-Platform"
+
+# Leave unset to have Terraform generate a strong value and store it in Key
+# Vault. Set them only if you need to pin a known value.
+# postgres_admin_password = "..."
+# jwt_secret              = "..."
+
+# Redis is optional — the API degrades to an in-process store without it.
+enable_redis = true
+
+# Deterministic OTP path for the judging walkthrough.
+demo_mode = true

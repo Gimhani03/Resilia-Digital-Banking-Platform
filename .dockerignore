@@ -1,0 +1,26 @@
+**/node_modules
+**/dist
+**/build
+**/.turbo
+
+# Expo app is out of deploy scope and would dominate the build context.
+apps/mobile
+
+.git
+.github
+infra/terraform/.terraform
+infra/terraform/*.tfstate*
+infra/terraform/tfplan
+
+**/.env
+**/.env.*
+!**/.env.example
+
+**/*.db
+**/*.sqlite
+apps/api/uploads
+apps/api/prisma/migrations
+
+**/*.log
+**/.DS_Store
+**/coverage

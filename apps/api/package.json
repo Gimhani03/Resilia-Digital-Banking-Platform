@@ -10,7 +10,29 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy && prisma generate",
     "prisma:migrate:dev": "prisma migrate dev --name init",
-    "prisma:seed": "ts-node --transpile-only prisma/seed.ts"
+    "prisma:seed": "ts-node --transpile-only prisma/seed.ts",
+    "test": "jest --passWithNoTests",
+    "test:cov": "jest --coverage --passWithNoTests"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "collectCoverageFrom": [
+      "**/*.service.ts",
+      "**/service-role.ts"
+    ],
+    "coverageDirectory": "../coverage",
+    "transform": {
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "isolatedModules": true,
+          "diagnostics": false
+        }
+      ]
+    }
   },
   "dependencies": {
     "@nestjs/common": "^11.0.12",
@@ -33,7 +55,10 @@
     "@nestjs/schematics": "^11.0.2",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^5.0.1",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.13.10",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
     "prisma": "^6.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.2"

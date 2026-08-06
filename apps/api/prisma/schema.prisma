@@ -2,10 +2,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Default: SQLite (works without Docker). For Postgres: set provider = "postgresql"
-// and DATABASE_URL=postgresql://resilia:resilia@localhost:5432/resilia then db push.
+// PostgreSQL in every deployed environment. Schema is applied with
+// `prisma db push` from the container that carries RUN_MIGRATIONS=true — the
+// committed migration history is SQLite-era and is not replayed against
+// Postgres. See DEPLOYMENT.md, "Schema management".
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

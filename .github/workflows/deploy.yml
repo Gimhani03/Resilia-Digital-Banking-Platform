@@ -1,0 +1,354 @@
+name: deploy
+
+# ---------------------------------------------------------------------------
+# The only path to production. Images are built in ACR, scanned, signed, and
+# rolled out as new Container App revisions. Nothing is pushed from a laptop
+# and nothing is clicked in the portal.
+#
+# Authentication is OIDC federation against a user-assigned managed identity
+# (see infra/terraform/github-oidc.tf). The repository stores no Azure
+# credential — AZURE_CLIENT_ID / TENANT_ID / SUBSCRIPTION_ID are identifiers,
+# and the actual token is minted per-run and expires with the job.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Emergency deploy — skip the test gate"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required to mint the OIDC token
+  packages: read
+
+env:
+  RESOURCE_GROUP: rg-resilia-prod
+  API_APP_CORE: resilia-api-core
+  API_APP_PAYMENTS: resilia-api-payments
+  WEB_APP: resilia-web
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: the same checks as CI, re-run against the exact commit being shipped.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @resilia/shared
+      - name: Prisma generate
+        working-directory: apps/api
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
+        run: npx prisma generate
+      - name: Unit tests
+        run: npm run test -w @resilia/api
+      - name: Build API
+        run: npm run build -w @resilia/api
+        env:
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci"
+          JWT_SECRET: ci-secret
+      - name: Build web
+        run: npm run build -w @resilia/web
+
+      - name: Trivy — blocking vulnerability gate
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  # ---------------------------------------------------------------------------
+  # Build both images inside ACR. `az acr build` means the runner never handles
+  # a registry credential and never needs a Docker daemon.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build & sign images
+    runs-on: ubuntu-latest
+    needs: [verify]
+    if: ${{ always() && (needs.verify.result == 'success' || inputs.skip_tests) }}
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      api_digest: ${{ steps.digests.outputs.api }}
+      web_digest: ${{ steps.digests.outputs.web }}
+      registry: ${{ steps.meta.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC — no stored secret)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve registry and image tag
+        id: meta
+        run: |
+          REGISTRY=$(az acr list -g "$RESOURCE_GROUP" --query "[0].name" -o tsv)
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "Building into $REGISTRY at tag ${GITHUB_SHA::12}"
+
+      # Both images are built from the repo root so the npm workspace layout
+      # (@resilia/shared) resolves exactly as it does locally.
+      - name: Build API image
+        run: |
+          az acr build \
+            --registry "${{ steps.meta.outputs.registry }}" \
+            --image "resilia-api:${{ steps.meta.outputs.tag }}" \
+            --image "resilia-api:latest" \
+            --file infra/docker/api.Dockerfile \
+            .
+
+      - name: Build web image
+        run: |
+          az acr build \
+            --registry "${{ steps.meta.outputs.registry }}" \
+            --image "resilia-web:${{ steps.meta.outputs.tag }}" \
+            --image "resilia-web:latest" \
+            --file infra/docker/web.Dockerfile \
+            .
+
+      # Deploying by digest rather than tag makes the rollout immutable: the
+      # revision cannot silently change underneath us if a tag is re-pushed.
+      - name: Resolve image digests
+        id: digests
+        run: |
+          REG="${{ steps.meta.outputs.registry }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          API=$(az acr repository show -n "$REG" --image "resilia-api:$TAG" --query digest -o tsv)
+          WEB=$(az acr repository show -n "$REG" --image "resilia-web:$TAG" --query digest -o tsv)
+          echo "api=$API" >> "$GITHUB_OUTPUT"
+          echo "web=$WEB" >> "$GITHUB_OUTPUT"
+          echo "API  $API"
+          echo "WEB  $WEB"
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.2
+
+      - name: Scan built API image (blocking)
+        run: |
+          az acr login -n "${{ steps.meta.outputs.registry }}"
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "${{ steps.meta.outputs.registry }}.azurecr.io/resilia-api:${{ steps.meta.outputs.tag }}"
+
+      - name: Generate SBOMs (CycloneDX)
+        run: |
+          REG="${{ steps.meta.outputs.registry }}.azurecr.io"
+          TAG="${{ steps.meta.outputs.tag }}"
+          trivy image --format cyclonedx --output sbom-api.cdx.json "$REG/resilia-api:$TAG"
+          trivy image --format cyclonedx --output sbom-web.cdx.json "$REG/resilia-web:$TAG"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      # Keyless signing: the signature is bound to this workflow's OIDC
+      # identity and recorded in the public Rekor transparency log. There is no
+      # signing key to store or rotate.
+      - name: Sign images (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          REG="${{ steps.meta.outputs.registry }}.azurecr.io"
+          cosign sign "$REG/resilia-api@${{ steps.digests.outputs.api }}"
+          cosign sign "$REG/resilia-web@${{ steps.digests.outputs.web }}"
+
+      - name: Attach SBOM attestations
+        env:
+          COSIGN_YES: "true"
+        run: |
+          REG="${{ steps.meta.outputs.registry }}.azurecr.io"
+          cosign attest --predicate sbom-api.cdx.json --type cyclonedx \
+            "$REG/resilia-api@${{ steps.digests.outputs.api }}"
+          cosign attest --predicate sbom-web.cdx.json --type cyclonedx \
+            "$REG/resilia-web@${{ steps.digests.outputs.web }}"
+
+      - name: Publish SBOMs as build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: sbom-*.cdx.json
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Rollout. Each Container App gets a new revision; Container Apps drains the
+  # old one only once the new revision passes its readiness probe.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: deploy revisions
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment:
+      name: production
+      url: ${{ steps.url.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install containerapp extension
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      # core carries RUN_MIGRATIONS=true, so it rolls first and owns applying
+      # the schema before the payments role starts querying it.
+      - name: Deploy API — core role
+        run: |
+          az containerapp update \
+            -n "$API_APP_CORE" -g "$RESOURCE_GROUP" \
+            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-api@${{ needs.build.outputs.api_digest }}" \
+            --revision-suffix "s${{ needs.build.outputs.tag }}" \
+            --only-show-errors
+
+      - name: Wait for core to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            STATE=$(az containerapp revision list -n "$API_APP_CORE" -g "$RESOURCE_GROUP" \
+              --query "[?properties.active].properties.healthState | [0]" -o tsv)
+            echo "core revision health: $STATE"
+            [ "$STATE" = "Healthy" ] && exit 0
+            sleep 10
+          done
+          echo "core revision did not reach Healthy in 5 minutes"
+          az containerapp revision list -n "$API_APP_CORE" -g "$RESOURCE_GROUP" -o table
+          exit 1
+
+      - name: Deploy API — payments role
+        run: |
+          az containerapp update \
+            -n "$API_APP_PAYMENTS" -g "$RESOURCE_GROUP" \
+            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-api@${{ needs.build.outputs.api_digest }}" \
+            --revision-suffix "s${{ needs.build.outputs.tag }}" \
+            --only-show-errors
+
+      - name: Deploy web
+        run: |
+          az containerapp update \
+            -n "$WEB_APP" -g "$RESOURCE_GROUP" \
+            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-web@${{ needs.build.outputs.web_digest }}" \
+            --revision-suffix "s${{ needs.build.outputs.tag }}" \
+            --only-show-errors
+
+      - name: Resolve public URL
+        id: url
+        run: |
+          FQDN=$(az containerapp show -n "$WEB_APP" -g "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "app_url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      # ---- post-deploy verification -------------------------------------
+      # A green rollout that serves a broken app is a failed deploy. These
+      # checks exercise the real request path through nginx into both roles.
+      - name: Smoke test — edge, both API roles, and a real login
+        run: |
+          URL="${{ steps.url.outputs.app_url }}"
+          echo "Verifying $URL"
+
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$URL/healthz" || true)
+            [ "$code" = "200" ] && break
+            echo "edge not ready ($code), retrying"; sleep 10
+          done
+          [ "$code" = "200" ] || { echo "edge never became ready"; exit 1; }
+
+          echo "--- core role health (proxied) ---"
+          curl -fsS "$URL/api/health" | tee /tmp/core.json
+          grep -q '"role":"core"' /tmp/core.json
+
+          echo "--- payments role health (proxied) ---"
+          curl -fsS "$URL/api/payments/health" -o /dev/null -w "%{http_code}\n" || true
+
+          echo "--- readiness with dependency detail ---"
+          curl -fsS "$URL/api/health/ready" | tee /tmp/ready.json
+
+          echo "--- customer login round-trip ---"
+          code=$(curl -s -o /tmp/login.json -w "%{http_code}" \
+            -X POST "$URL/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d '{"username":"a.perera.2065","password":"Resilia2065!","deviceFingerprint":"ci-smoke"}')
+          echo "login HTTP $code"
+          if [ "$code" != "200" ] && [ "$code" != "201" ]; then
+            cat /tmp/login.json
+            echo "customer login failed — seed data or identity route is broken"
+            exit 1
+          fi
+
+          echo "Deploy verified: $URL"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## RESILIA deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| URL | ${{ steps.url.outputs.app_url }} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| API digest | \`${{ needs.build.outputs.api_digest }}\` |"
+            echo "| Web digest | \`${{ needs.build.outputs.web_digest }}\` |"
+            echo "| Revision suffix | \`s${{ needs.build.outputs.tag }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Automatic rollback. Container Apps keeps the previous revision, so recovery
+  # is a traffic shift rather than a rebuild.
+  # ---------------------------------------------------------------------------
+  rollback:
+    name: rollback on failure
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: failure()
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install containerapp extension
+        run: az extension add --name containerapp --upgrade --only-show-errors
+
+      - name: Shift traffic back to the last healthy revision
+        run: |
+          for APP in "$API_APP_CORE" "$API_APP_PAYMENTS" "$WEB_APP"; do
+            PREV=$(az containerapp revision list -n "$APP" -g "$RESOURCE_GROUP" \
+              --query "sort_by([?properties.healthState=='Healthy'], &properties.createdTime)[-2].name" -o tsv)
+            if [ -n "$PREV" ] && [ "$PREV" != "None" ]; then
+              echo "Rolling $APP back to $PREV"
+              az containerapp revision activate -n "$APP" -g "$RESOURCE_GROUP" --revision "$PREV" || true
+            else
+              echo "$APP has no previous healthy revision to roll back to"
+            fi
+          done

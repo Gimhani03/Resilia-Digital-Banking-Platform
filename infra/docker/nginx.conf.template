@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# Web edge.
+#
+# The SPA calls `const API = "/api"` — a same-origin relative path. Rather than
+# rewriting the client and opening CORS, nginx terminates that origin: it
+# serves the built bundle and reverse-proxies /api by route prefix to whichever
+# internal API role owns it. Same-origin for the browser, partitioned services
+# behind it, and no CORS surface at all.
+#
+# API_CORE_HOST / API_PAYMENTS_HOST are the internal Container Apps ingress
+# FQDNs, injected by Terraform and substituted at container start.
+# ---------------------------------------------------------------------------
+
+upstream api_core {
+    server ${API_CORE_HOST}:443;
+    keepalive 16;
+}
+
+upstream api_payments {
+    server ${API_PAYMENTS_HOST}:443;
+    keepalive 16;
+}
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Container Apps terminates TLS at the edge; these make the original scheme
+    # and client IP visible to the API behind the proxy.
+    real_ip_header X-Forwarded-For;
+    set_real_ip_from 0.0.0.0/0;
+
+    server_tokens off;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # Edge liveness — answered by nginx itself, so it stays green while an API
+    # role is restarting. API health is reported separately at /api/health.
+    location = /healthz {
+        access_log off;
+        default_type application/json;
+        return 200 '{"status":"ok","service":"resilia-web"}';
+    }
+
+    # ---- core role: identity, accounts, audit, notifications ----
+    location ~ ^/api/(auth|accounts|audit|notifications|health) {
+        proxy_pass https://api_core;
+        include /etc/nginx/conf.d/proxy-common.inc;
+    }
+
+    # ---- payments role: payments, fraud, cards, loans, ops console ----
+    location ~ ^/api/(payments|fraud|cards|loans|ops) {
+        proxy_pass https://api_payments;
+        include /etc/nginx/conf.d/proxy-common.inc;
+    }
+
+    # Any other /api path belongs to no role — fail loudly rather than serving
+    # index.html and letting the SPA parse HTML as JSON.
+    location /api {
+        default_type application/json;
+        return 404 '{"error":"no service owns this route"}';
+    }
+
+    # Hashed Vite assets are immutable.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA history fallback — /ops/signin and the PhoneShell routes are
+    # client-side, so unknown paths must return index.html, never 404.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
