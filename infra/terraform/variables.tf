@@ -116,3 +116,44 @@ variable "github_repository_id" {
   type        = string
   default     = "1319370753"
 }
+
+# ---------------------------------------------------------------------------
+# Alerting and synthetic monitoring
+# ---------------------------------------------------------------------------
+
+variable "ops_alert_email" {
+  description = <<-EOT
+    Address the ops action group notifies.
+
+    Empty by default and supplied through a gitignored tfvars file: this
+    repository is public, so a personal inbox must not be committed to it. An
+    action group with no receiver still evaluates its rules but delivers
+    nothing, which is why this is worth setting.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "enable_availability_test" {
+  description = <<-EOT
+    Provision the Application Insights standard web test that probes the public
+    edge from outside Azure.
+
+    Separately toggleable because availability tests are not offered in every
+    region, and this subscription restricts which regions may be used at all.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "availability_test_location" {
+  description = "Region hosting the web test resource. Must be permitted by the subscription's region policy."
+  type        = string
+  default     = "centralindia"
+}
+
+variable "availability_test_geo_locations" {
+  description = "Points of presence the synthetic probe runs from. More than one so a single probe outage is not read as an outage of the service."
+  type        = list(string)
+  default     = ["apac-sg-sin-azr", "emea-nl-ams-azr"]
+}
