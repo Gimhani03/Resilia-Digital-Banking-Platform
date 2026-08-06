@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Live application** | `<<LIVE_URL>>` |
+| **Live application** | **https://resilia-web.happymushroom-b22b23ba.centralindia.azurecontainerapps.io** |
 | **Repository** | https://github.com/Gimhani03/Resilia-Digital-Banking-Platform |
 | **Platform** | Azure Container Apps (Kubernetes-backed), region `centralindia` |
 | **Provisioned by** | Terraform — `infra/terraform/` |
@@ -75,7 +75,8 @@ hash-chained event written by the fraud service.
      └───────┬────────┘  └────────┬─────────┘
              └──────────┬─────────┘
                         ▼
-      PostgreSQL Flexible Server · Redis · Azure Files
+      PostgreSQL Flexible Server · Azure Files
+              (no Redis — see §9a)
                         │
               Key Vault (secret references)
                         │
@@ -149,6 +150,18 @@ mid-demo. Two independent guards, both in `infra/docker/api-entrypoint.sh`:
 2. The entrypoint seeds only when `prisma.user.count() === 0`, and **refuses to
    seed** if it cannot determine the count.
 
+Both guards behaved correctly on the first real deployment: the log shows
+`empty database — seeding demo dataset` on the first boot, and
+`database already populated — skipping destructive seed` on every boot after.
+
+A third rule was added after that first deployment: **a failed seed no longer
+stops the service.** The seed initially crashed on a ts-node configuration
+error, and because the entrypoint ran under `set -e` the container exited,
+Container Apps restarted it, and it crashed again — nginx served 502 for every
+route. A cosmetic tooling error had become a total outage. A failed seed now
+logs a warning and the API starts anyway, because a service running against an
+empty database is far easier to diagnose than one that will not boot.
+
 ## 6. Build and release automation
 
 `.github/workflows/ci.yml` (every push and PR):
@@ -164,7 +177,7 @@ mid-demo. Two independent guards, both in `infra/docker/api-entrypoint.sh`:
 
 ```
 verify (build + tests + blocking Trivy gate)
-  → az acr build          both images, built inside ACR
+  → buildx build + push   both images, built on the runner (see §9a)
   → trivy image           blocking scan of the built artifact
   → CycloneDX SBOM        one per image, published as build artifacts
   → cosign sign           keyless, recorded in the Rekor transparency log
@@ -178,8 +191,17 @@ Images deploy **by digest**, not by tag, so a revision cannot silently change
 if a tag is re-pushed. `core` rolls first because it applies the schema the
 `payments` role then queries.
 
-There is no other path to production. No `kubectl apply`, no portal clicking,
-no local `docker push`.
+**One honest exception.** The pipeline is the deploy path, and no change
+reaches production outside it — but the *initial* environment was bootstrapped
+by hand, because a cold environment is circular: Terraform cannot create a
+Container App that references an image, and the image cannot be pushed to a
+registry Terraform has not created yet. That first pass built and pushed both
+images locally and ran `terraform apply`. `infra/scripts/bootstrap.sh` captures
+the sequence. Every subsequent change ships through `deploy.yml`, and the
+workflow detects a cold environment and stops after publishing images rather
+than failing.
+
+No `kubectl apply`, and no portal clicking, at any point.
 
 ## 7. Security
 
