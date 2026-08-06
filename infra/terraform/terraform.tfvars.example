@@ -2,7 +2,7 @@
 # gitignored, and the two sensitive variables below are generated at apply time
 # when left unset, which is the recommended path.
 
-location          = "southeastasia"
+location          = "centralindia"
 environment       = "prod"
 github_repository = "Gimhani03/Resilia-Digital-Banking-Platform"
 

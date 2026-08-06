@@ -11,9 +11,28 @@ variable "environment" {
 }
 
 variable "location" {
-  description = "Azure region for all resources."
+  description = <<-EOT
+    Azure region for all resources.
+
+    This subscription carries the "Allowed resource deployment regions" policy
+    (Azure for Students), which permits only: eastasia, malaysiawest, uaenorth,
+    indonesiacentral, centralindia. southeastasia is rejected at create time
+    with RequestDisallowedByAzure, so it cannot be used here.
+
+    centralindia is chosen as the closest allowed region to Sri Lanka, and it
+    supports Container Apps, PostgreSQL Flexible Server B1ms on version 16, and
+    Azure Cache for Redis.
+  EOT
   type        = string
-  default     = "southeastasia"
+  default     = "centralindia"
+
+  validation {
+    condition = contains(
+      ["eastasia", "malaysiawest", "uaenorth", "indonesiacentral", "centralindia"],
+      var.location,
+    )
+    error_message = "Region not permitted by the subscription's allowed-regions policy. Choose one of: eastasia, malaysiawest, uaenorth, indonesiacentral, centralindia."
+  }
 }
 
 variable "postgres_admin_user" {
