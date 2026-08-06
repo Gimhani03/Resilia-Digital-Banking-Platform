@@ -28,24 +28,67 @@ RUN npx prisma generate --schema apps/api/prisma/schema.prisma
 RUN npm run build --workspace @resilia/api
 
 # ---------------------------------------------------------------------------
+# A second, independent dependency tree containing only what the API needs at
+# runtime. The build stage's node_modules cannot be shipped as-is: it carries
+# the whole toolchain, and the root `optionalDependencies` deliberately pin the
+# web bundler's native binaries for every platform so one lockfile serves
+# Windows, CI and Alpine. That is correct for building the *web* image and
+# wrong for running the *API* — it puts @esbuild/linux-x64, a Go binary the API
+# never executes, into the runtime filesystem, where it contributed fifteen Go
+# stdlib CVEs and failed the blocking image scan.
+#
+# `--omit=optional` drops those native binaries; `--omit=dev` drops the
+# compilers, Nest CLI, jest and ts-node. Nothing here is reachable at runtime,
+# so removing it is strictly better than arguing it is unreachable in a
+# suppression file.
+FROM node:22-alpine AS prod-deps
+WORKDIR /app
+RUN apk add --no-cache openssl libc6-compat
+
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
+
+RUN npm ci --omit=dev --omit=optional \
+      --workspace @resilia/api --workspace @resilia/shared \
+      --include-workspace-root --ignore-scripts \
+  && mkdir -p apps/api/node_modules
+
+# The Prisma client is generated against this tree, not copied from the build
+# stage, so the engine binaries match the modules actually present.
+COPY apps/api/prisma apps/api/prisma
+RUN npx prisma generate --schema apps/api/prisma/schema.prisma
+
+# ---------------------------------------------------------------------------
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
 RUN apk add --no-cache openssl libc6-compat curl \
   && addgroup -S resilia && adduser -S resilia -G resilia
 
+# Remove npm from the production image. Every dependency is already installed
+# and every entrypoint calls a binary directly, so the package manager is dead
+# weight — and it is not harmless dead weight: npm vendors its own dependency
+# tree, which is where the last eight CRITICAL/HIGH findings in this image
+# lived (node-tar, sigstore, brace-expansion, ip-address, picomatch). None were
+# application code. Deleting it also means a process that achieves execution in
+# this container has no package manager available to fetch anything with.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/bin/npm \
+           /usr/local/bin/npx
+
 ENV NODE_ENV=production \
     PORT=3001 \
     SERVICE_ROLE=all \
     RUN_MIGRATIONS=false
 
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
-COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
 
 COPY infra/docker/api-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

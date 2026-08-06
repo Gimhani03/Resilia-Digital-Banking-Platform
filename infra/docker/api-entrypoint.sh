@@ -17,7 +17,10 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
 
   # `db push` rather than `migrate deploy`: the committed migration history is
   # SQLite-era and cannot be replayed against Postgres. See DEPLOYMENT.md.
-  npx prisma db push \
+  #
+  # Invoked through the installed binary rather than `npx`, because npm is
+  # deleted from the production image — see api.Dockerfile.
+  ./node_modules/.bin/prisma db push \
     --schema apps/api/prisma/schema.prisma \
     --skip-generate \
     --accept-data-loss
@@ -37,18 +40,19 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
   case "$SEED_NEEDED" in
     yes)
       log "empty database — seeding demo dataset"
-      # Explicit compiler options rather than relying on tsconfig discovery:
-      # ts-node resolves its config from the working directory, and picking up
-      # a `module: NodeNext` config here fails with TS5109 even under
-      # --transpile-only.
+      # The compiled seed, not ts-node against the .ts source. apps/api's
+      # tsconfig includes `prisma` alongside `src`, so `nest build` already
+      # emits dist/prisma/seed.js — the TypeScript toolchain was never actually
+      # needed at runtime, only assumed to be. Running the compiled artefact
+      # lets the runtime image drop every dev dependency, and removes the
+      # ts-node config resolution that caused the TS5109 crash loop in the
+      # first place.
       #
-      # A seed failure must not take the service down. Without `|| ...` the
-      # `set -e` above turns it into a crash loop, which is how a cosmetic
-      # TypeScript config error becomes a total outage — the API never starts,
-      # and nginx serves 502 for every route.
-      if npx ts-node --transpile-only \
-        --compiler-options '{"module":"commonjs","moduleResolution":"node","esModuleInterop":true,"target":"ES2021"}' \
-        apps/api/prisma/seed.ts; then
+      # A seed failure must still not take the service down. Without `|| ...`
+      # the `set -e` above turns it into a crash loop, which is how a cosmetic
+      # error becomes a total outage — the API never starts, and nginx serves
+      # 502 for every route.
+      if node apps/api/dist/prisma/seed.js; then
         log "seed complete"
       else
         log "WARNING: seed failed — starting API anyway against an empty database"
