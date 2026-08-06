@@ -24,9 +24,16 @@
   "devDependencies": {
     "concurrently": "^10.0.4"
   },
+  "//": "Native binaries for every platform the project is built on. npm can omit a platform's optional binding from a lockfile generated on a different OS (npm/cli#4828), which surfaces as 'Cannot find native binding' at build time. Listing each variant explicitly keeps Windows development, Ubuntu CI, and the Alpine (musl) container images all resolvable from one committed lockfile.",
   "optionalDependencies": {
     "@rollup/rollup-win32-x64-msvc": "^4.62.4",
+    "@rollup/rollup-linux-x64-gnu": "^4.62.4",
+    "@rollup/rollup-linux-x64-musl": "^4.62.4",
     "@tailwindcss/oxide-win32-x64-msvc": "^4.3.3",
-    "lightningcss-win32-x64-msvc": "^1.33.0"
+    "@tailwindcss/oxide-linux-x64-gnu": "^4.3.3",
+    "@tailwindcss/oxide-linux-x64-musl": "^4.3.3",
+    "lightningcss-win32-x64-msvc": "^1.33.0",
+    "lightningcss-linux-x64-gnu": "^1.33.0",
+    "lightningcss-linux-x64-musl": "^1.33.0"
   }
 }
