@@ -182,14 +182,44 @@ verify (build + tests + blocking Trivy gate)
   → CycloneDX SBOM        one per image, published as build artifacts
   → cosign sign           keyless, recorded in the Rekor transparency log
   → cosign attest         SBOM attached as an attestation
-  → deploy by digest      core first (owns migrations), then payments, then web
+  → cosign verify         both digests checked against this workflow's identity
+  → canary revision       created at 0% traffic, must report Healthy
+  → 10% traffic           real requests for 90s, any non-200 aborts
+  → promote               canary takes the remaining 90%
   → smoke test            edge, both roles, and a real customer login
-  → rollback on failure   traffic shifted to the last healthy revision
+  → rollback on failure   traffic weight returned to the recorded revision
 ```
 
 Images deploy **by digest**, not by tag, so a revision cannot silently change
 if a tag is re-pushed. `core` rolls first because it applies the schema the
 `payments` role then queries.
+
+**Signatures are verified, not just produced.** Signing an image proves nothing
+if nothing checks the signature afterwards. Before any revision is created, both
+digests are verified against this workflow's Sigstore identity on this branch,
+so an image substituted in the registry between build and deploy fails the gate
+rather than reaching production.
+
+**The rollout is progressive.** All three apps run in `Multiple` revision mode,
+which makes traffic weight something the pipeline sets rather than a
+consequence of which revision is newest. A new revision is created with no
+traffic at all, has to report `Healthy`, then serves 10% of live requests for 90
+seconds while every response is checked. Only then does it take the rest. The
+revisions actually observed serving during the soak are printed in the job log,
+so the split is evidenced rather than asserted.
+
+This matters for a reason worth stating plainly: **under the previous `Single`
+revision mode the rollback job did nothing.** In that mode 100% of traffic
+always follows the newest revision, and `az containerapp revision activate` —
+what the job ran — activates an old revision without moving any traffic to it.
+The job reported success and changed nothing. Weight-based traffic is what makes
+rollback real; it is now a single weight change back to the revision recorded
+before the run started, and it takes seconds with no rebuild and no image pull.
+
+One consequence to be honest about: during the canary window the previous
+revision is still serving most traffic against the newly-applied schema, so
+migrations must be backwards compatible (expand/contract). A destructive
+migration would break the stable revision, not merely the canary.
 
 **One honest exception.** The pipeline is the deploy path, and no change
 reaches production outside it — but the *initial* environment was bootstrapped
@@ -263,6 +293,49 @@ Also live:
 - **Request correlation** — `x-request-id` is generated at the API, propagated
   by nginx, and returned on every response.
 
+## 8a. Incident — "the site loads but no data appears"
+
+Recorded because the diagnosis is more useful than the fix, and because it is
+the one class of bug this pipeline was structurally unable to catch.
+
+**Symptom.** Reported live: the application shell rendered and nothing
+populated. Every server-side signal was green — `/api/health` ok, database `up`,
+traffic 100% on a single healthy revision, twenty consecutive probes returning
+200. Logging in over the API and walking the whole flow returned correct data:
+challenge → MFA → token → `/api/accounts` with real balances. Nothing was
+broken on the server, and no amount of looking at the server would have found
+it.
+
+**Cause.** A caching contract that was half right. Vite asset filenames are
+content-hashed and were served `Cache-Control: immutable, max-age=1y`, which is
+correct. `index.html` was served with **no `Cache-Control` at all** — only
+`ETag` and `Last-Modified`. For a response with no explicit directive a browser
+applies *heuristic freshness* and may reuse its copy without revalidating.
+
+`index.html` is the only file that tells a browser which asset hashes exist. A
+visitor holding a pre-deploy copy therefore requested asset hashes the new
+revision no longer contained, every `<script>` 404'd, and the page rendered its
+shell and loaded nothing.
+
+**Why every gate missed it.** The failure requires a browser that visited
+*before* the deploy. The smoke tests use `curl`, which carries no cache and
+starts every request from nothing, so a fully successful pipeline run and a
+broken user experience were entirely compatible. The canary could not catch it
+either: the canary revision is *new*, so it serves the current hashes correctly
+to anyone arriving fresh.
+
+**Fix.** `index.html` and the SPA history fallback now send
+`Cache-Control: no-cache, must-revalidate`. That still permits caching — it
+requires revalidation — so the ETag round-trip stays cheap while correctness
+stops depending on when the visitor first arrived. Hashed assets keep their
+immutable year.
+
+**What it says about the gates.** Synthetic checks written by the people who
+wrote the deploy inherit the deploy's assumptions. A check that always starts
+from an empty cache can never observe a stale-cache failure. This is the
+argument for the availability test in §8 running from outside Azure, and the
+argument for the next one to carry state between runs.
+
 ## 9. Deployed state vs. target state
 
 Our target-architecture document describes a larger system. This section maps
@@ -271,12 +344,12 @@ state. Nothing in the "target" column is claimed as delivered.
 
 | Criterion | Deployed now | Target state |
 |---|---|---|
-| **Build & release automation** (20%) | GitHub Actions: build → test → blocking Trivy → SBOM → cosign keyless sign → `az acr build` → digest-pinned revision deploy → smoke test → auto-rollback. OIDC federation, no stored credential. | Argo CD pull-based GitOps with Argo Rollouts progressive canary and automated metric-based promotion. |
+| **Build & release automation** (20%) | GitHub Actions: build → test → blocking Trivy → SBOM → cosign keyless sign → **cosign verify** → digest-pinned canary revision → **10% traffic for 90s** → promote → smoke test → **weight-based auto-rollback**. OIDC federation, no stored credential. | Argo CD pull-based GitOps. Progressive canary is delivered — Container Apps traffic weights turned out to be sufficient without Argo Rollouts — but promotion is gated on error rate rather than on a full metric analysis. |
 | **Service deployment & environment consistency** (15%) | Three independently deployable Container Apps from two immutable images. Identical image across environments; only env vars and Key Vault references differ. Local `docker-compose` runs the same images. | Fully separate services per domain with HTTP/gRPC boundaries, once `PaymentsService`'s in-process dependencies on Fraud and Identity are refactored to clients. |
-| **Automated infrastructure & config management** (15%) | 100% Terraform: registry, environment, Postgres, Redis, Key Vault, identities, federated credentials, storage, alerting, all three apps. `terraform fmt`/`validate` enforced in CI. | Remote state in Azure Storage with locking, `terraform plan` posted to PRs, multi-environment workspaces (dev/staging/prod). |
-| **Operational visibility & system health** (15%) | Log Analytics, Application Insights, liveness + readiness probes, real region/revision/replica reporting, Redis degradation surfaced, metric alert, request-id correlation. | Prometheus + Grafana + Loki + Tempo with distributed tracing across service boundaries, RED/USE dashboards, SLO error budgets. |
-| **Security & sensitive data** (15%) | OIDC federation (zero stored credentials), Key Vault secret references, managed identity everywhere, no registry password, internal-only API ingress, TLS end to end, non-root containers, blocking vulnerability gate, SBOM + cosign signatures, gitleaks. | HashiCorp Vault with dynamic short-lived database credentials, private endpoints + VNet injection removing public network access entirely, admission policy enforcing signature verification at deploy time. |
-| **Scalability, availability & reliability** (10%) | KEDA HTTP-concurrency autoscaling per role (payments 1–10, core 1–5), `min_replicas=1` to avoid cold starts, rolling revision deploys gated on readiness, automatic rollback, shared Azure Files for uploads so replicas > 1 is safe. | Citus-sharded ledger, Postgres read replicas + zone-redundant HA, Kafka/Redpanda event backbone replacing the in-process bus, multi-region active-active. |
+| **Automated infrastructure & config management** (15%) | 100% Terraform: registry, environment, Postgres, Redis, Key Vault, identities, federated credentials, storage, alerting, all three apps. **Remote state in Azure Storage with blob-lease locking and Entra RBAC auth — no storage key.** `terraform fmt`/`validate` enforced in CI. | `terraform plan` posted to PRs, multi-environment workspaces (dev/staging/prod). |
+| **Operational visibility & system health** (15%) | Log Analytics, Application Insights, liveness + readiness probes, real region/revision/replica reporting, Redis degradation surfaced, metric alert **with an actual email receiver**, **synthetic availability probe from Singapore and Amsterdam including a TLS-expiry check**, request-id correlation. | Prometheus + Grafana + Loki + Tempo with distributed tracing across service boundaries, RED/USE dashboards, SLO error budgets. |
+| **Security & sensitive data** (15%) | OIDC federation (zero stored credentials), Key Vault secret references, managed identity everywhere, no registry password, internal-only API ingress, TLS end to end, non-root containers, blocking vulnerability gate **passing on a genuinely clean image — no toolchain and no package manager in the runtime layer**, SBOM + cosign signatures **verified before rollout**, gitleaks. | HashiCorp Vault with dynamic short-lived database credentials, private endpoints + VNet injection removing public network access entirely. Signature verification is enforced by the pipeline; moving it into an admission policy would enforce it for deploys the pipeline never sees. |
+| **Scalability, availability & reliability** (10%) | KEDA HTTP-concurrency autoscaling per role (payments 1–10, core 1–5), `min_replicas=1` to avoid cold starts, **canary revisions gated on readiness then on live error rate**, **rollback by traffic weight in seconds**, shared Azure Files for uploads so replicas > 1 is safe. | Citus-sharded ledger, Postgres read replicas + zone-redundant HA, Kafka/Redpanda event backbone replacing the in-process bus, multi-region active-active. |
 | **Engineering best practices** (5%) | First unit tests in `apps/api` — nine cases pinning the fraud scoring rules and the hold threshold. Typed config, formatted and validated IaC, documented trade-offs, honest scope statements. | Integration tests against ephemeral Postgres, contract tests at service boundaries, meaningful coverage thresholds enforced in CI. |
 
 **Explicitly not built** (and not claimed): Kafka/Redpanda, Citus sharding,
