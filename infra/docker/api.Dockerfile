@@ -60,4 +60,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
   CMD curl -fsS http://127.0.0.1:3001/api/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["node", "apps/api/dist/main.js"]
+# dist/src/main.js, not dist/main.js: apps/api/tsconfig.json includes both
+# `src` and `prisma`, so tsc's common source root is apps/api and the emitted
+# tree keeps that structure.
+CMD ["node", "apps/api/dist/src/main.js"]

@@ -37,8 +37,22 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
   case "$SEED_NEEDED" in
     yes)
       log "empty database — seeding demo dataset"
-      npx ts-node --transpile-only apps/api/prisma/seed.ts
-      log "seed complete"
+      # Explicit compiler options rather than relying on tsconfig discovery:
+      # ts-node resolves its config from the working directory, and picking up
+      # a `module: NodeNext` config here fails with TS5109 even under
+      # --transpile-only.
+      #
+      # A seed failure must not take the service down. Without `|| ...` the
+      # `set -e` above turns it into a crash loop, which is how a cosmetic
+      # TypeScript config error becomes a total outage — the API never starts,
+      # and nginx serves 502 for every route.
+      if npx ts-node --transpile-only \
+        --compiler-options '{"module":"commonjs","moduleResolution":"node","esModuleInterop":true,"target":"ES2021"}' \
+        apps/api/prisma/seed.ts; then
+        log "seed complete"
+      else
+        log "WARNING: seed failed — starting API anyway against an empty database"
+      fi
       ;;
     no)
       log "database already populated — skipping destructive seed"
