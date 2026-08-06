@@ -62,9 +62,22 @@ variable "demo_mode" {
 }
 
 variable "enable_redis" {
-  description = "Provision Azure Cache for Redis. The API degrades to an in-process store when false."
+  description = <<-EOT
+    Provision Azure Cache for Redis.
+
+    Defaults to false. Azure Cache for Redis is being retired and the API now
+    refuses to create new instances ("Azure Cache for Redis is retiring, create
+    Azure Managed Redis instance instead"). The replacement, Azure Managed
+    Redis, starts well above this deployment's budget.
+
+    With this off, RedisService falls back to its in-process store. That is a
+    real degradation — OTP challenges and rate-limit counters become
+    replica-local — and it is reported honestly rather than hidden:
+    /api/health/ready returns `redis: degraded`, and the service logs the
+    fallback at error level. See DEPLOYMENT.md.
+  EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "container_image_tag" {

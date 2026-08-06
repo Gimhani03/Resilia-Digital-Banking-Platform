@@ -112,25 +112,43 @@ jobs:
           echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           echo "Building into $REGISTRY at tag ${GITHUB_SHA::12}"
 
-      # Both images are built from the repo root so the npm workspace layout
-      # (@resilia/shared) resolves exactly as it does locally.
-      - name: Build API image
-        run: |
-          az acr build \
-            --registry "${{ steps.meta.outputs.registry }}" \
-            --image "resilia-api:${{ steps.meta.outputs.tag }}" \
-            --image "resilia-api:latest" \
-            --file infra/docker/api.Dockerfile \
-            .
+      # Images are built on the runner and pushed, rather than with
+      # `az acr build`. ACR Tasks (the server-side build service) are not
+      # permitted on this subscription — it rejects them with
+      # TasksOperationsNotAllowed — so the build has to happen somewhere we
+      # control. The runner still never holds a registry password: `az acr
+      # login` exchanges the OIDC-derived Azure token for a short-lived
+      # registry token.
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Build web image
-        run: |
-          az acr build \
-            --registry "${{ steps.meta.outputs.registry }}" \
-            --image "resilia-web:${{ steps.meta.outputs.tag }}" \
-            --image "resilia-web:latest" \
-            --file infra/docker/web.Dockerfile \
-            .
+      - name: Registry login (token from the OIDC session)
+        run: az acr login -n "${{ steps.meta.outputs.registry }}"
+
+      # Both images build from the repo root so the npm workspace layout
+      # (@resilia/shared) resolves exactly as it does locally.
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/api.Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.registry }}.azurecr.io/resilia-api:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.registry }}.azurecr.io/resilia-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/web.Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.registry }}.azurecr.io/resilia-web:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.registry }}.azurecr.io/resilia-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
 
       # Deploying by digest rather than tag makes the rollout immutable: the
       # revision cannot silently change underneath us if a tag is re-pushed.
@@ -220,9 +238,25 @@ jobs:
       - name: Install containerapp extension
         run: az extension add --name containerapp --upgrade --only-show-errors
 
+      # On a cold environment the images must exist in ACR before Terraform can
+      # create the Container Apps that reference them. That first run therefore
+      # ends here: the build job has published the images, and `terraform apply`
+      # creates the apps from them. Every run after that finds the apps present
+      # and performs a normal revision rollout.
+      - name: Check whether the Container Apps exist yet
+        id: exists
+        run: |
+          if az containerapp show -n "$WEB_APP" -g "$RESOURCE_GROUP" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Container Apps not provisioned yet — images are published, run terraform apply to create them." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # core carries RUN_MIGRATIONS=true, so it rolls first and owns applying
       # the schema before the payments role starts querying it.
       - name: Deploy API — core role
+        if: steps.exists.outputs.found == 'true'
         run: |
           az containerapp update \
             -n "$API_APP_CORE" -g "$RESOURCE_GROUP" \

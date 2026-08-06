@@ -12,7 +12,7 @@ github_repository = "Gimhani03/Resilia-Digital-Banking-Platform"
 # jwt_secret              = "..."
 
 # Redis is optional — the API degrades to an in-process store without it.
-enable_redis = true
+enable_redis = false
 
 # Deterministic OTP path for the judging walkthrough.
 demo_mode = true

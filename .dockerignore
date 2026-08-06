@@ -1,4 +1,11 @@
+# Both forms are required. `**/node_modules` alone does not exclude the
+# repository-root node_modules in the tar packer `az acr build` uses, which
+# means a local build silently uploads ~640 MB / 50k+ files as build context
+# and appears to hang. The bare entry excludes the root directory; the `**/`
+# entry excludes the per-workspace ones.
+node_modules
 **/node_modules
+
 **/dist
 **/build
 **/.turbo
