@@ -79,9 +79,31 @@ server {
         try_files $uri =404;
     }
 
+    # index.html must never be cached, and this is not a nicety.
+    #
+    # Asset filenames are content-hashed and served immutable for a year, so
+    # index.html is the only file that tells a browser which hashes are current.
+    # Served without an explicit Cache-Control — as it was — browsers apply
+    # heuristic freshness from Last-Modified and reuse a stale copy without
+    # revalidating. That copy references asset hashes the new revision no longer
+    # contains, every script tag 404s, and the page renders its shell and then
+    # loads nothing. It presents as "the site is up but no data appears", and it
+    # strikes hardest immediately after a successful deploy, on exactly the
+    # browsers that visited before it.
+    #
+    # `no-cache` still permits caching — it requires revalidation, so the ETag
+    # round-trip stays cheap while correctness stops depending on the visitor's
+    # history.
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        try_files $uri =404;
+    }
+
     # SPA history fallback — /ops/signin and the PhoneShell routes are
     # client-side, so unknown paths must return index.html, never 404.
     location / {
+        add_header Cache-Control "no-cache, must-revalidate" always;
         try_files $uri $uri/ /index.html;
     }
 }
