@@ -17,6 +17,12 @@ RUN npm ci --workspace @resilia/web --workspace @resilia/shared --include-worksp
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 
+# @resilia/shared must be compiled first. Vite resolves it through an alias to
+# the TypeScript source, but the web build runs `tsc -b` ahead of `vite build`,
+# and tsc resolves the workspace package through its package.json `types` entry
+# — which points at dist/index.d.ts. Without this step the build fails with
+# TS2307: Cannot find module '@resilia/shared'.
+RUN npm run build --workspace @resilia/shared
 RUN npm run build --workspace @resilia/web
 
 # ---------------------------------------------------------------------------
