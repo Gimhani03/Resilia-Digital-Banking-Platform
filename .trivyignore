@@ -1,0 +1,29 @@
+# Trivy ignore list.
+#
+# Every entry must state why the vulnerability is not reachable in this
+# deployment and carry a review date. Entries without a justification do not
+# belong here — the blocking CRITICAL/HIGH gate in .github/workflows/ci.yml is
+# only worth having if the exceptions are deliberate and few.
+
+# ---------------------------------------------------------------------------
+# GHSA-qwww-vcr4-c8h2 — react-router: RSC Mode CSRF Bypass Allows Action
+# Execution Before 400 Response.
+#
+# Present: react-router 7.18.2 (transitive, via react-router-dom in apps/web).
+# Fixed in: 8.3.0 — a major version bump with breaking routing API changes.
+#
+# Not reachable here. The advisory applies to React Server Components mode,
+# which requires a server-side router runtime. apps/web is a client-side SPA
+# built by Vite and served as static assets by nginx; there is no RSC runtime,
+# no server-side router, and no router action handling in the deployed
+# artifact. The API is NestJS and does not use react-router at all.
+#
+# CSRF protection for state-changing requests is enforced server-side by the
+# API's auth guard and bearer-token scheme, not by the router.
+#
+# Action: upgrade react-router-dom to v8 as planned work, outside the
+# competition deadline, with routing regression testing across the customer
+# PhoneShell and ops console shells.
+#
+# Review by: 2026-09-30
+GHSA-qwww-vcr4-c8h2
