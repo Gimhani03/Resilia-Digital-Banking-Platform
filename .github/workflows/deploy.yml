@@ -1,9 +1,9 @@
 name: deploy
 
 # ---------------------------------------------------------------------------
-# The only path to production. Images are built in ACR, scanned, signed, and
-# rolled out as new Container App revisions. Nothing is pushed from a laptop
-# and nothing is clicked in the portal.
+# The only path to production. Images are built, scanned, signed, verified, and
+# rolled out as new Container App revisions behind a progressive traffic shift.
+# Nothing is pushed from a laptop and nothing is clicked in the portal.
 #
 # Authentication is OIDC federation against a user-assigned managed identity
 # (see infra/terraform/github-oidc.tf). The repository stores no Azure
@@ -38,6 +38,10 @@ env:
   API_APP_CORE: resilia-api-core
   API_APP_PAYMENTS: resilia-api-payments
   WEB_APP: resilia-web
+  # Share of live traffic the new revision receives before it is trusted with
+  # the rest, and how long it must hold that share without an error.
+  CANARY_PERCENT: "10"
+  CANARY_SOAK_SECONDS: "90"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -81,8 +85,11 @@ jobs:
           format: table
 
   # ---------------------------------------------------------------------------
-  # Build both images inside ACR. `az acr build` means the runner never handles
-  # a registry credential and never needs a Docker daemon.
+  # Build, scan, sign. Images are built on the runner rather than with
+  # `az acr build` because ACR Tasks are not permitted on this subscription
+  # (TasksOperationsNotAllowed). The runner still never holds a registry
+  # password: `az acr login` exchanges the OIDC-derived Azure token for a
+  # short-lived registry token.
   # ---------------------------------------------------------------------------
   build:
     name: build & sign images
@@ -112,13 +119,6 @@ jobs:
           echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           echo "Building into $REGISTRY at tag ${GITHUB_SHA::12}"
 
-      # Images are built on the runner and pushed, rather than with
-      # `az acr build`. ACR Tasks (the server-side build service) are not
-      # permitted on this subscription — it rejects them with
-      # TasksOperationsNotAllowed — so the build has to happen somewhere we
-      # control. The runner still never holds a registry password: `az acr
-      # login` exchanges the OIDC-derived Azure token for a short-lived
-      # registry token.
       - uses: docker/setup-buildx-action@v3
 
       - name: Registry login (token from the OIDC session)
@@ -215,16 +215,30 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------
-  # Rollout. Each Container App gets a new revision; Container Apps drains the
-  # old one only once the new revision passes its readiness probe.
+  # Progressive rollout.
+  #
+  # The apps run in `Multiple` revision mode, so traffic weight is explicit and
+  # a rollback is a weight change rather than a rebuild. A new revision is
+  # created with no traffic, has to report Healthy, then serves CANARY_PERCENT
+  # of real requests for CANARY_SOAK_SECONDS. Only if it survives that does it
+  # take the remaining traffic.
+  #
+  # Under `Single` mode — the previous configuration — 100% of traffic always
+  # follows the newest revision and `revision activate` cannot take it back.
+  # The rollback job was therefore inert. Weight-based traffic is what makes it
+  # real.
   # ---------------------------------------------------------------------------
   deploy:
-    name: deploy revisions
+    name: canary rollout
     runs-on: ubuntu-latest
     needs: [build]
     environment:
       name: production
       url: ${{ steps.url.outputs.app_url }}
+    outputs:
+      prev_core: ${{ steps.prev.outputs.core }}
+      prev_payments: ${{ steps.prev.outputs.payments }}
+      prev_web: ${{ steps.prev.outputs.web }}
     steps:
       - uses: actions/checkout@v4
 
@@ -241,8 +255,7 @@ jobs:
       # On a cold environment the images must exist in ACR before Terraform can
       # create the Container Apps that reference them. That first run therefore
       # ends here: the build job has published the images, and `terraform apply`
-      # creates the apps from them. Every run after that finds the apps present
-      # and performs a normal revision rollout.
+      # creates the apps from them.
       - name: Check whether the Container Apps exist yet
         id: exists
         run: |
@@ -253,62 +266,212 @@ jobs:
             echo "Container Apps not provisioned yet — images are published, run terraform apply to create them." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # core carries RUN_MIGRATIONS=true, so it rolls first and owns applying
-      # the schema before the payments role starts querying it.
-      - name: Deploy API — core role
+      - name: Install cosign
+        if: steps.exists.outputs.found == 'true'
+        uses: sigstore/cosign-installer@v3.7.0
+
+      # Signing an image proves nothing on its own if nothing ever checks the
+      # signature. This is the half that does: the digests about to be deployed
+      # must carry a Sigstore signature issued to *this* workflow on *this*
+      # branch. An image substituted in the registry between build and deploy
+      # fails here and never reaches a revision.
+      - name: Verify image signatures before rollout
         if: steps.exists.outputs.found == 'true'
         run: |
-          az containerapp update \
-            -n "$API_APP_CORE" -g "$RESOURCE_GROUP" \
-            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-api@${{ needs.build.outputs.api_digest }}" \
-            --revision-suffix "s${{ needs.build.outputs.tag }}" \
-            --only-show-errors
+          REG="${{ needs.build.outputs.registry }}.azurecr.io"
+          az acr login -n "${{ needs.build.outputs.registry }}"
+          IDENTITY="^https://github.com/${{ github.repository }}/\.github/workflows/deploy\.yml@refs/heads/main$"
 
-      - name: Wait for core to be healthy
-        run: |
-          for i in $(seq 1 30); do
-            STATE=$(az containerapp revision list -n "$API_APP_CORE" -g "$RESOURCE_GROUP" \
-              --query "[?properties.active].properties.healthState | [0]" -o tsv)
-            echo "core revision health: $STATE"
-            [ "$STATE" = "Healthy" ] && exit 0
-            sleep 10
+          for REF in "resilia-api@${{ needs.build.outputs.api_digest }}" \
+                     "resilia-web@${{ needs.build.outputs.web_digest }}"; do
+            echo "::group::cosign verify $REF"
+            cosign verify \
+              --certificate-identity-regexp "$IDENTITY" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$REG/$REF"
+            echo "::endgroup::"
+            echo "signature verified — $REF"
           done
-          echo "core revision did not reach Healthy in 5 minutes"
-          az containerapp revision list -n "$API_APP_CORE" -g "$RESOURCE_GROUP" -o table
-          exit 1
 
-      - name: Deploy API — payments role
+      # A `latestRevision` traffic rule hands 100% of traffic to a brand-new
+      # revision the instant it is created, which is precisely what a canary
+      # must not do. Convert any such rule into an explicit pin on the revision
+      # serving right now, so the next revision lands at zero. Idempotent — a
+      # no-op once weights are already explicit.
+      - name: Pin traffic to the running revision
+        if: steps.exists.outputs.found == 'true'
         run: |
-          az containerapp update \
-            -n "$API_APP_PAYMENTS" -g "$RESOURCE_GROUP" \
-            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-api@${{ needs.build.outputs.api_digest }}" \
-            --revision-suffix "s${{ needs.build.outputs.tag }}" \
-            --only-show-errors
+          for APP in "$API_APP_CORE" "$API_APP_PAYMENTS" "$WEB_APP"; do
+            USES_LATEST=$(az containerapp show -n "$APP" -g "$RESOURCE_GROUP" \
+              --query "properties.configuration.ingress.traffic[?latestRevision==\`true\`] | length(@)" -o tsv)
+            if [ "$USES_LATEST" != "0" ]; then
+              CUR=$(az containerapp revision list -n "$APP" -g "$RESOURCE_GROUP" \
+                --query "sort_by([?properties.active==\`true\`], &properties.createdTime)[-1].name" -o tsv)
+              echo "$APP: converting latestRevision rule to an explicit pin on $CUR"
+              az containerapp ingress traffic set -n "$APP" -g "$RESOURCE_GROUP" \
+                --revision-weight "$CUR=100" --only-show-errors -o none
+            else
+              echo "$APP: traffic weights already explicit"
+            fi
+          done
 
-      - name: Deploy web
+      # Captured before anything changes, so the rollback job has a known-good
+      # target rather than having to infer one from timestamps.
+      - name: Record the currently serving revisions
+        if: steps.exists.outputs.found == 'true'
+        id: prev
         run: |
-          az containerapp update \
-            -n "$WEB_APP" -g "$RESOURCE_GROUP" \
-            --image "${{ needs.build.outputs.registry }}.azurecr.io/resilia-web@${{ needs.build.outputs.web_digest }}" \
-            --revision-suffix "s${{ needs.build.outputs.tag }}" \
-            --only-show-errors
+          for PAIR in "core:$API_APP_CORE" "payments:$API_APP_PAYMENTS" "web:$WEB_APP"; do
+            KEY="${PAIR%%:*}"; APP="${PAIR##*:}"
+            REV=$(az containerapp show -n "$APP" -g "$RESOURCE_GROUP" \
+              --query "sort_by(properties.configuration.ingress.traffic, &weight)[-1].revisionName" -o tsv)
+            echo "$KEY=$REV" >> "$GITHUB_OUTPUT"
+            echo "stable $APP -> $REV"
+          done
+
+      # core carries RUN_MIGRATIONS=true, so it rolls first and owns applying
+      # the schema before the payments role starts querying it.
+      #
+      # Note the constraint this places on schema changes: during the canary
+      # window the previous revision is still serving most traffic against the
+      # newly-applied schema, so migrations must be backwards compatible
+      # (expand/contract). A destructive migration would break the stable
+      # revision, not just the canary.
+      - name: Create canary revisions (zero traffic)
+        if: steps.exists.outputs.found == 'true'
+        id: canary
+        run: |
+          REG="${{ needs.build.outputs.registry }}.azurecr.io"
+          SUFFIX="s${{ needs.build.outputs.tag }}"
+
+          deploy_app() {
+            local APP="$1" IMAGE="$2" KEY="$3"
+            echo "::group::$APP -> $IMAGE"
+            az containerapp update -n "$APP" -g "$RESOURCE_GROUP" \
+              --image "$IMAGE" --revision-suffix "$SUFFIX" \
+              --only-show-errors -o none
+            local REV
+            REV=$(az containerapp revision list -n "$APP" -g "$RESOURCE_GROUP" \
+              --query "sort_by([], &properties.createdTime)[-1].name" -o tsv)
+            echo "$KEY=$REV" >> "$GITHUB_OUTPUT"
+            echo "canary revision: $REV"
+            echo "::endgroup::"
+          }
+
+          deploy_app "$API_APP_CORE"     "$REG/resilia-api@${{ needs.build.outputs.api_digest }}" core
+          deploy_app "$API_APP_PAYMENTS" "$REG/resilia-api@${{ needs.build.outputs.api_digest }}" payments
+          deploy_app "$WEB_APP"          "$REG/resilia-web@${{ needs.build.outputs.web_digest }}" web
+
+      - name: Wait for every canary revision to report Healthy
+        if: steps.exists.outputs.found == 'true'
+        run: |
+          check() {
+            local APP="$1" REV="$2"
+            for _ in $(seq 1 30); do
+              STATE=$(az containerapp revision show -n "$APP" -g "$RESOURCE_GROUP" \
+                --revision "$REV" --query "properties.healthState" -o tsv 2>/dev/null || echo Unknown)
+              RUNNING=$(az containerapp revision show -n "$APP" -g "$RESOURCE_GROUP" \
+                --revision "$REV" --query "properties.runningState" -o tsv 2>/dev/null || echo Unknown)
+              echo "$APP/$REV health=$STATE running=$RUNNING"
+              [ "$STATE" = "Healthy" ] && [ "$RUNNING" = "Running" ] && return 0
+              sleep 10
+            done
+            echo "::error::$APP revision $REV never became Healthy"
+            az containerapp logs show -n "$APP" -g "$RESOURCE_GROUP" --tail 50 --type console || true
+            return 1
+          }
+
+          check "$API_APP_CORE"     "${{ steps.canary.outputs.core }}"
+          check "$API_APP_PAYMENTS" "${{ steps.canary.outputs.payments }}"
+          check "$WEB_APP"          "${{ steps.canary.outputs.web }}"
 
       - name: Resolve public URL
+        if: steps.exists.outputs.found == 'true'
         id: url
         run: |
           FQDN=$(az containerapp show -n "$WEB_APP" -g "$RESOURCE_GROUP" \
             --query properties.configuration.ingress.fqdn -o tsv)
           echo "app_url=https://$FQDN" >> "$GITHUB_OUTPUT"
 
+      - name: Shift ${{ env.CANARY_PERCENT }}% of traffic to the canary
+        if: steps.exists.outputs.found == 'true'
+        run: |
+          STABLE_SHARE=$((100 - CANARY_PERCENT))
+          shift_to() {
+            local APP="$1" NEW="$2" OLD="$3"
+            if [ "$NEW" = "$OLD" ]; then
+              echo "$APP: canary and stable are the same revision, nothing to split"
+              return 0
+            fi
+            az containerapp ingress traffic set -n "$APP" -g "$RESOURCE_GROUP" \
+              --revision-weight "$OLD=$STABLE_SHARE" "$NEW=$CANARY_PERCENT" \
+              --only-show-errors -o none
+            echo "$APP: $OLD=$STABLE_SHARE%  $NEW=$CANARY_PERCENT%"
+          }
+
+          shift_to "$API_APP_CORE"     "${{ steps.canary.outputs.core }}"     "${{ steps.prev.outputs.core }}"
+          shift_to "$API_APP_PAYMENTS" "${{ steps.canary.outputs.payments }}" "${{ steps.prev.outputs.payments }}"
+          shift_to "$WEB_APP"          "${{ steps.canary.outputs.web }}"      "${{ steps.prev.outputs.web }}"
+
+      # Real requests through the public edge for the soak window. Any 5xx
+      # fails the job, which triggers the rollback. The revisions actually
+      # observed are printed as evidence that the split is live rather than
+      # merely configured.
+      - name: Soak the canary under live traffic
+        if: steps.exists.outputs.found == 'true'
+        run: |
+          URL="${{ steps.url.outputs.app_url }}"
+          DEADLINE=$(( $(date +%s) + CANARY_SOAK_SECONDS ))
+          TOTAL=0; BAD=0
+          : > /tmp/revs.txt
+
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            CODE=$(curl -s -o /tmp/h.json -w "%{http_code}" --max-time 15 "$URL/api/health" || echo 000)
+            TOTAL=$((TOTAL + 1))
+            if [ "$CODE" != "200" ]; then
+              BAD=$((BAD + 1))
+              echo "non-200 from /api/health: $CODE"
+              cat /tmp/h.json || true
+            else
+              python3 -c "import json,sys;print(json.load(open('/tmp/h.json')).get('revision','?'))" >> /tmp/revs.txt 2>/dev/null || true
+            fi
+            curl -s -o /dev/null --max-time 15 "$URL/healthz" || true
+            sleep 2
+          done
+
+          echo "--- revisions observed serving during the soak ---"
+          sort /tmp/revs.txt | uniq -c | sort -rn
+
+          echo "requests=$TOTAL failures=$BAD"
+          if [ "$BAD" -gt 0 ]; then
+            echo "::error::canary produced $BAD failed requests out of $TOTAL — aborting rollout"
+            exit 1
+          fi
+
+      - name: Promote the canary to 100%
+        if: steps.exists.outputs.found == 'true'
+        run: |
+          promote() {
+            local APP="$1" NEW="$2"
+            az containerapp ingress traffic set -n "$APP" -g "$RESOURCE_GROUP" \
+              --revision-weight "$NEW=100" --only-show-errors -o none
+            echo "$APP: promoted $NEW to 100%"
+          }
+
+          promote "$API_APP_CORE"     "${{ steps.canary.outputs.core }}"
+          promote "$API_APP_PAYMENTS" "${{ steps.canary.outputs.payments }}"
+          promote "$WEB_APP"          "${{ steps.canary.outputs.web }}"
+
       # ---- post-deploy verification -------------------------------------
       # A green rollout that serves a broken app is a failed deploy. These
       # checks exercise the real request path through nginx into both roles.
       - name: Smoke test — edge, both API roles, and a real login
+        if: steps.exists.outputs.found == 'true'
         run: |
           URL="${{ steps.url.outputs.app_url }}"
           echo "Verifying $URL"
 
-          for i in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$URL/healthz" || true)
             [ "$code" = "200" ] && break
             echo "edge not ready ($code), retrying"; sleep 10
@@ -318,9 +481,6 @@ jobs:
           echo "--- core role health (proxied) ---"
           curl -fsS "$URL/api/health" | tee /tmp/core.json
           grep -q '"role":"core"' /tmp/core.json
-
-          echo "--- payments role health (proxied) ---"
-          curl -fsS "$URL/api/payments/health" -o /dev/null -w "%{http_code}\n" || true
 
           echo "--- readiness with dependency detail ---"
           curl -fsS "$URL/api/health/ready" | tee /tmp/ready.json
@@ -351,12 +511,15 @@ jobs:
             echo "| Commit | \`${{ github.sha }}\` |"
             echo "| API digest | \`${{ needs.build.outputs.api_digest }}\` |"
             echo "| Web digest | \`${{ needs.build.outputs.web_digest }}\` |"
-            echo "| Revision suffix | \`s${{ needs.build.outputs.tag }}\` |"
+            echo "| Signatures | verified against \`${{ github.repository }}\` on \`refs/heads/main\` |"
+            echo "| Canary | ${{ env.CANARY_PERCENT }}% for ${{ env.CANARY_SOAK_SECONDS }}s, then promoted |"
+            echo "| Previous (rollback target) | \`${{ steps.prev.outputs.core }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # Automatic rollback. Container Apps keeps the previous revision, so recovery
-  # is a traffic shift rather than a rebuild.
+  # Rollback. Because traffic is weight-based, recovery is a single weight
+  # change back to the revision that was serving before this run — no rebuild,
+  # no image pull, effective in seconds.
   # ---------------------------------------------------------------------------
   rollback:
     name: rollback on failure
@@ -374,15 +537,42 @@ jobs:
       - name: Install containerapp extension
         run: az extension add --name containerapp --upgrade --only-show-errors
 
-      - name: Shift traffic back to the last healthy revision
+      - name: Return all traffic to the last known-good revisions
+        run: |
+          restore() {
+            local APP="$1" REV="$2"
+            if [ -z "$REV" ] || [ "$REV" = "None" ]; then
+              echo "::warning::$APP has no recorded rollback target — leaving traffic as-is"
+              return 0
+            fi
+            az containerapp ingress traffic set -n "$APP" -g "$RESOURCE_GROUP" \
+              --revision-weight "$REV=100" --only-show-errors -o none
+            echo "$APP: traffic returned to $REV"
+          }
+
+          restore "$API_APP_CORE"     "${{ needs.deploy.outputs.prev_core }}"
+          restore "$API_APP_PAYMENTS" "${{ needs.deploy.outputs.prev_payments }}"
+          restore "$WEB_APP"          "${{ needs.deploy.outputs.prev_web }}"
+
+      - name: Confirm the restored revisions are serving
         run: |
           for APP in "$API_APP_CORE" "$API_APP_PAYMENTS" "$WEB_APP"; do
-            PREV=$(az containerapp revision list -n "$APP" -g "$RESOURCE_GROUP" \
-              --query "sort_by([?properties.healthState=='Healthy'], &properties.createdTime)[-2].name" -o tsv)
-            if [ -n "$PREV" ] && [ "$PREV" != "None" ]; then
-              echo "Rolling $APP back to $PREV"
-              az containerapp revision activate -n "$APP" -g "$RESOURCE_GROUP" --revision "$PREV" || true
-            else
-              echo "$APP has no previous healthy revision to roll back to"
-            fi
+            echo "--- $APP ---"
+            az containerapp show -n "$APP" -g "$RESOURCE_GROUP" \
+              --query "properties.configuration.ingress.traffic" -o table
           done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Rollback executed"
+            echo ""
+            echo "Traffic was returned to the revisions that were serving before this run."
+            echo ""
+            echo "| App | Restored revision |"
+            echo "|---|---|"
+            echo "| \`resilia-api-core\` | \`${{ needs.deploy.outputs.prev_core }}\` |"
+            echo "| \`resilia-api-payments\` | \`${{ needs.deploy.outputs.prev_payments }}\` |"
+            echo "| \`resilia-web\` | \`${{ needs.deploy.outputs.prev_web }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

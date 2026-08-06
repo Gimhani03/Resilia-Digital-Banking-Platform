@@ -32,7 +32,7 @@ resource "azurerm_container_app" "api_core" {
   name                         = "${var.project}-api-core"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
-  revision_mode                = "Single"
+  revision_mode                = "Multiple"
   tags                         = merge(local.tags, { role = "core" })
 
   identity {
@@ -145,7 +145,15 @@ resource "azurerm_container_app" "api_core" {
   lifecycle {
     # CI is the deploy path: it publishes a new revision with a digest-pinned
     # image. Terraform must not roll that back on the next plan.
-    ignore_changes = [template[0].container[0].image]
+    #
+    # Traffic weights are owned by the pipeline for the same reason. Under
+    # `Multiple` revision mode the canary moves weight between revisions whose
+    # suffixes Terraform cannot know at plan time, so re-applying must not
+    # reset the split — least of all mid-rollout.
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
   }
 
   depends_on = [azurerm_role_assignment.acr_pull, azurerm_role_assignment.kv_reader]
@@ -160,7 +168,7 @@ resource "azurerm_container_app" "api_payments" {
   name                         = "${var.project}-api-payments"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
-  revision_mode                = "Single"
+  revision_mode                = "Multiple"
   tags                         = merge(local.tags, { role = "payments" })
 
   identity {
@@ -270,7 +278,10 @@ resource "azurerm_container_app" "api_payments" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].container[0].image]
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
   }
 
   depends_on = [azurerm_role_assignment.acr_pull, azurerm_role_assignment.kv_reader]
@@ -285,7 +296,7 @@ resource "azurerm_container_app" "web" {
   name                         = "${var.project}-web"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
-  revision_mode                = "Single"
+  revision_mode                = "Multiple"
   tags                         = merge(local.tags, { role = "web" })
 
   identity {
@@ -355,7 +366,10 @@ resource "azurerm_container_app" "web" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].container[0].image]
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
   }
 
   depends_on = [azurerm_role_assignment.acr_pull]
