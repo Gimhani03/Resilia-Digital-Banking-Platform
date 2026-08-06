@@ -71,7 +71,7 @@ jobs:
         run: npm run build -w @resilia/web
 
       - name: Trivy — blocking vulnerability gate
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scan-ref: .
@@ -147,7 +147,7 @@ jobs:
           echo "WEB  $WEB"
 
       - name: Install Trivy
-        uses: aquasecurity/setup-trivy@v0.2.2
+        uses: aquasecurity/setup-trivy@v0.3.1
 
       - name: Scan built API image (blocking)
         run: |

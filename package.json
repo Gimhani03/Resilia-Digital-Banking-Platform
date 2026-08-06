@@ -22,9 +22,11 @@
     "setup": "npm install && npm run build -w @resilia/shared && cd apps/api && npx prisma migrate dev --name init --skip-seed && npm run prisma:seed"
   },
   "devDependencies": {
+    "concurrently": "^10.0.4"
+  },
+  "optionalDependencies": {
     "@rollup/rollup-win32-x64-msvc": "^4.62.4",
     "@tailwindcss/oxide-win32-x64-msvc": "^4.3.3",
-    "concurrently": "^10.0.4",
     "lightningcss-win32-x64-msvc": "^1.33.0"
   }
 }
