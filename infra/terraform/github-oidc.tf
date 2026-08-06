@@ -19,20 +19,44 @@ resource "azurerm_user_assigned_identity" "github" {
   tags                = local.tags
 }
 
-resource "azurerm_federated_identity_credential" "main_branch" {
-  name      = "github-main"
-  parent_id = azurerm_user_assigned_identity.github.id
-  audience  = ["api://AzureADTokenExchange"]
-  issuer    = "https://token.actions.githubusercontent.com"
-  subject   = "repo:${var.github_repository}:ref:refs/heads/main"
+locals {
+  github_owner = split("/", var.github_repository)[0]
+  github_repo  = split("/", var.github_repository)[1]
+
+  # Two subject spellings. GitHub is migrating from the name-based `sub` to an
+  # ID-qualified one that survives a rename; this repository already emits the
+  # ID-qualified form. Azure matches `subject` exactly and supports no
+  # wildcards, so both are registered rather than guessed at.
+  github_subject_prefixes = {
+    named     = "repo:${var.github_repository}"
+    immutable = "repo:${local.github_owner}@${var.github_owner_id}/${local.github_repo}@${var.github_repository_id}"
+  }
+
+  # Three scopes, because the scope depends on how the *job* is declared, not
+  # on the workflow. A job with `environment: production` — the deploy job —
+  # gets `environment:production` as its subject scope and never
+  # `ref:refs/heads/main`. Registering only the branch scope authenticates the
+  # build job and then fails the deploy job.
+  github_subject_scopes = {
+    main = "ref:refs/heads/main"
+    pr   = "pull_request"
+    prod = "environment:production"
+  }
+
+  github_federated_subjects = {
+    for pair in setproduct(keys(local.github_subject_prefixes), keys(local.github_subject_scopes)) :
+    "${pair[0]}-${pair[1]}" => "${local.github_subject_prefixes[pair[0]]}:${local.github_subject_scopes[pair[1]]}"
+  }
 }
 
-resource "azurerm_federated_identity_credential" "pull_request" {
-  name      = "github-pr"
+resource "azurerm_federated_identity_credential" "github" {
+  for_each = local.github_federated_subjects
+
+  name      = "github-${each.key}"
   parent_id = azurerm_user_assigned_identity.github.id
   audience  = ["api://AzureADTokenExchange"]
   issuer    = "https://token.actions.githubusercontent.com"
-  subject   = "repo:${var.github_repository}:pull_request"
+  subject   = each.value
 }
 
 # Deploy rights are scoped to this resource group only, never the subscription.

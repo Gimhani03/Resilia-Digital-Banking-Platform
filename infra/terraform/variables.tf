@@ -91,3 +91,28 @@ variable "github_repository" {
   type        = string
   default     = "Gimhani03/Resilia-Digital-Banking-Platform"
 }
+
+# GitHub is migrating the OIDC `sub` claim to an ID-qualified form that survives
+# a repository or account being renamed:
+#
+#   repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:refs/heads/main
+#
+# The name-based form alone is no longer sufficient — this repository already
+# emits the ID-qualified subject, which is what broke every deploy run until it
+# was matched. Read the live value with:
+#
+#   gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+#
+# Azure federated credentials match `subject` exactly, with no wildcard support,
+# so both forms are registered and either is accepted.
+variable "github_owner_id" {
+  description = "Numeric GitHub account id, used to build the ID-qualified OIDC subject."
+  type        = string
+  default     = "123150385"
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub repository id, used to build the ID-qualified OIDC subject."
+  type        = string
+  default     = "1319370753"
+}
