@@ -57,5 +57,5 @@ variable "container_image_tag" {
 variable "github_repository" {
   description = "owner/repo used to scope the OIDC federated credential."
   type        = string
-  default     = "ruwithma/Resilia-Digital-Banking-Platform"
+  default     = "Gimhani03/Resilia-Digital-Banking-Platform"
 }

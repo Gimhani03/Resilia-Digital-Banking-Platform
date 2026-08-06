@@ -4,7 +4,7 @@
 
 location          = "southeastasia"
 environment       = "prod"
-github_repository = "ruwithma/Resilia-Digital-Banking-Platform"
+github_repository = "Gimhani03/Resilia-Digital-Banking-Platform"
 
 # Leave unset to have Terraform generate a strong value and store it in Key
 # Vault. Set them only if you need to pin a known value.
