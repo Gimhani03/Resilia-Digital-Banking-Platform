@@ -5,7 +5,12 @@
 # resolved through the Vite alias, so the shared package needs no build step.
 # ---------------------------------------------------------------------------
 
-FROM node:22-alpine AS build
+# Debian rather than Alpine for the build stage. Vite's toolchain (esbuild,
+# rollup, lightningcss, tailwind oxide) ships prebuilt native binaries, and the
+# glibc variants are the ones this repository's lockfile carries. Building on
+# musl would need a parallel set of -musl bindings for every one of them. The
+# runtime stage is still Alpine — it serves static files and needs no Node.
+FROM node:22-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./

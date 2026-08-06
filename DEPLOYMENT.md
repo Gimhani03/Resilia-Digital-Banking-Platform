@@ -6,7 +6,7 @@
 |---|---|
 | **Live application** | `<<LIVE_URL>>` |
 | **Repository** | https://github.com/Gimhani03/Resilia-Digital-Banking-Platform |
-| **Platform** | Azure Container Apps (Kubernetes-backed), region `southeastasia` |
+| **Platform** | Azure Container Apps (Kubernetes-backed), region `centralindia` |
 | **Provisioned by** | Terraform — `infra/terraform/` |
 | **Released by** | GitHub Actions — `.github/workflows/deploy.yml` |
 
@@ -261,6 +261,43 @@ state. Nothing in the "target" column is claimed as delivered.
 Linkerd service mesh, Argo CD / Argo Rollouts, Envoy Gateway, HashiCorp Vault,
 the Prometheus/Grafana/Loki/Tempo stack, and deployment of the Expo mobile app.
 The web app's `PhoneShell` covers the customer journey in its place.
+
+## 9a. Subscription constraints that shaped this deployment
+
+Three limits of the target subscription (Azure for Students) changed the
+design during deployment. They are recorded here because each one is a
+constraint a judge could otherwise read as a design mistake.
+
+**Region is policy-restricted.** The subscription carries the "Allowed resource
+deployment regions" policy, permitting only `eastasia`, `malaysiawest`,
+`uaenorth`, `indonesiacentral` and `centralindia`. Creating the registry in
+`southeastasia` failed with HTTP 403 `RequestDisallowedByAzure`. The resource
+group had been allowed through, so the limit only surfaced on the first real
+resource. The stack runs in `centralindia` — the closest permitted region to
+Sri Lanka — and `var.location` now carries a `validation` block so an
+unpermitted region fails at plan time rather than mid-apply.
+
+**ACR Tasks are not permitted.** `az acr build` — the server-side build service
+— is rejected with `TasksOperationsNotAllowed`. The pipeline therefore builds
+images on the GitHub runner with Buildx and pushes them, using GitHub Actions
+layer caching. This costs nothing in security terms: `az acr login` exchanges
+the OIDC-derived Azure token for a short-lived registry token, so the runner
+still never holds a registry password.
+
+**Azure Cache for Redis is retiring** and refuses new instances
+("create Azure Managed Redis instance instead"). Managed Redis starts well
+above this deployment's budget, so Redis is not provisioned.
+
+That last one is a genuine functional degradation and is reported as such
+rather than quietly ignored. `RedisService` falls back to an in-process store,
+which makes OTP challenges and rate-limit counters **replica-local** — two
+replicas do not share them. The system surfaces this instead of hiding it:
+`/api/health/ready` returns `redis: degraded` with the reason, and the service
+logs the fallback at error level. This is exactly the silent-failure mode the
+observability work set out to close, and it is visible in the live deployment.
+
+Re-enabling Redis is a one-line change (`enable_redis = true`) once an Azure
+Managed Redis SKU is affordable.
 
 ## 10. Reproducing this deployment
 
