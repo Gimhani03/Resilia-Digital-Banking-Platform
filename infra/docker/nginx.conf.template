@@ -11,15 +11,18 @@
 # FQDNs, injected by Terraform and substituted at container start.
 # ---------------------------------------------------------------------------
 
-upstream api_core {
-    server ${API_CORE_HOST}:443;
-    keepalive 16;
-}
-
-upstream api_payments {
-    server ${API_PAYMENTS_HOST}:443;
-    keepalive 16;
-}
+# Note: deliberately no `upstream` blocks here.
+#
+# With `upstream api_core { server <fqdn>:443; }` and `proxy_pass
+# https://api_core`, nginx sets $proxy_host to the *upstream name*, so both the
+# Host header and the TLS SNI become the literal string "api_core". Container
+# Apps ingress routes on the Host/SNI it receives, matches nothing, and every
+# request comes back 502.
+#
+# Passing the FQDN directly makes $proxy_host the real hostname, so Host and
+# SNI are correct by default. envsubst substitutes the literal name at container
+# start, which also means nginx resolves it once at startup and needs no
+# `resolver` directive.
 
 server {
     listen 8080;
@@ -52,13 +55,13 @@ server {
 
     # ---- core role: identity, accounts, audit, notifications ----
     location ~ ^/api/(auth|accounts|audit|notifications|health) {
-        proxy_pass https://api_core;
+        proxy_pass https://${API_CORE_HOST};
         include /etc/nginx/conf.d/proxy-common.inc;
     }
 
     # ---- payments role: payments, fraud, cards, loans, ops console ----
     location ~ ^/api/(payments|fraud|cards|loans|ops) {
-        proxy_pass https://api_payments;
+        proxy_pass https://${API_PAYMENTS_HOST};
         include /etc/nginx/conf.d/proxy-common.inc;
     }
 

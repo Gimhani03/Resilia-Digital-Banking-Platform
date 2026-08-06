@@ -6,6 +6,8 @@
 
 proxy_http_version 1.1;
 proxy_set_header Connection "";
+# $proxy_host is the real FQDN because proxy_pass targets it directly rather
+# than an upstream block — see the note at the top of nginx.conf.template.
 proxy_set_header Host $proxy_host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
